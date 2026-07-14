@@ -1,0 +1,17 @@
+{
+  "name": "@blind-turn/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@blind-turn/game-engine": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  }
+}
