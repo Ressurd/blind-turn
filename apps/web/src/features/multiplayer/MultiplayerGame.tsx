@@ -595,7 +595,7 @@ export function MultiplayerGame() {
         <section className="onlineLanding">
           <div className="onlineHero">
             <p className="eyebrow">2–6 PLAYER / LIVE BATTLE</p>
-            <h1>보이지 않는 선택.<br/><em>공개되는 결과.</em></h1>
+            <h1>BLIND<br/><em>TURN</em></h1>
             <p>친구에게 여섯 자리 코드를 공유하세요. 속도와 행동은 판정 전까지 오직 자신만 볼 수 있습니다.</p>
             <div className="securityNotes">
               <span><b>01</b> 서버 권한 판정</span>
