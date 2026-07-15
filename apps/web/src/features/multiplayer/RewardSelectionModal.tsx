@@ -22,11 +22,13 @@ export function RewardSelectionModal(props: {
   const confirmed = props.view.rewardSelectionConfirmed;
   const required = props.view.requiredRewardSelectionCount;
   const status = props.view.rewardSelectionStatus;
+  const isTactician = props.view.myCharacterId === "TACTICIAN";
+  const optionCount = props.view.rewardOptions.length;
   return (
     <div className="rewardOverlay" role="dialog" aria-modal="true" aria-label="성장 카드 선택">
       <section className="rewardSelectionModal">
         <header>
-          <div><p className="eyebrow">ROUND {props.view.roundNumber} · GROWTH</p><h2>카드 2장을 선택하세요</h2></div>
+          <div><p className="eyebrow">TURN {props.view.roundNumber} · GROWTH</p><h2>{isTactician ? "전술가의 선택" : "성장 카드 선택"}</h2><p>카드 {optionCount}장 중 2장을 선택하세요.</p></div>
           <div><span>현재 선택 {props.view.selectedRewards.length} / {required} · 제한 시간 60초</span><button type="button" onClick={props.onOpenDeck}>현재 덱 보기</button></div>
         </header>
         {confirmed ? (
@@ -39,10 +41,10 @@ export function RewardSelectionModal(props: {
         ) : (
           <>
             <div className="rewardStatusLine">
-              <span>직업 카드 2장 · 공용 카드 1장</span>
+              <span>{isTactician ? "전술가 카드 3장 · 공용 카드 1장" : "직업 카드 2장 · 공용 카드 1장"}</span>
               <strong>선택 {props.view.selectedRewards.length} / {required}</strong>
             </div>
-            <div className="rewardCardRail">
+            <div className={`rewardCardRail ${optionCount === 4 ? "fourOptions" : ""}`}>
               {props.view.rewardOptions.map((definition) => {
                 const owned = props.view.myDeckSummary.find((summary) => summary.cardId === definition.id)?.totalCount ?? 0;
                 const selected = selectedIds.has(definition.id);
@@ -60,7 +62,7 @@ export function RewardSelectionModal(props: {
                     <dl><div><dt>카테고리</dt><dd>{definition.category}</dd></div><div><dt>대상</dt><dd>{TARGET_LABEL[definition.targetType]}</dd></div></dl>
                     <p>{definition.description}</p>
                     <small>현재 {owned}장 / 최대 {MAX_COPIES_PER_CARD_ID}장</small>
-                    {selected ? <b className="rewardCardState">선택됨</b> : forfeited ? <b className="rewardCardState">이번에 포기</b> : null}
+                    {selected ? <b className="rewardCardState">선택됨</b> : forfeited ? <b className="rewardCardState">이번에 포기할 카드</b> : null}
                   </button>
                 );
               })}

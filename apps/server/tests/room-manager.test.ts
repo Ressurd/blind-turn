@@ -52,8 +52,11 @@ function selectAndReady(
   return setup;
 }
 
-function startTwoPlayerGame(manager: RoomManager) {
-  const setup = selectAndReady(manager);
+function startTwoPlayerGame(
+  manager: RoomManager,
+  classes: [CharacterClassId, CharacterClassId] = ["DUELIST", "BERSERKER"],
+) {
+  const setup = selectAndReady(manager, addTwoPlayers(manager), classes);
   manager.startGame(setup.roomCode, setup.host.credentials.playerId, "socket-1");
   return setup;
 }
@@ -68,7 +71,7 @@ function expectRoomError(operation: () => unknown, code: RoomError["code"]): voi
   }
 }
 
-function queueInput(card: PrivateCardView, targetPlayerId: string) {
+function actionInput(card: PrivateCardView, targetPlayerId: string) {
   return {
     cardInstanceId: card.instanceId,
     ...(card.definition.targetType === "ENEMY" ? { targetPlayerId } : {}),
@@ -130,23 +133,25 @@ describe("room and lobby", () => {
   });
 });
 
-describe("private round queue", () => {
-  it("shows the exact queue only to its owner and exposes only confirmation publicly", () => {
+describe("private turn action", () => {
+  it("shows the selected action only to its owner and exposes only confirmation publicly", () => {
     const manager = makeManager();
     const setup = startTwoPlayerGame(manager);
     const hostView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
     const card = hostView.myHand[0]!;
-    manager.queueCard(
+    manager.selectAction(
       setup.roomCode,
       setup.host.credentials.playerId,
       "socket-1",
       1,
-      queueInput(card, setup.guest.credentials.playerId),
+      actionInput(card, setup.guest.credentials.playerId),
     );
     const owner = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
     const opponent = manager.getPlayerView(setup.roomCode, setup.guest.credentials.playerId);
-    expect(owner.myQueuedCards).toHaveLength(1);
-    expect(opponent.myQueuedCards).toHaveLength(0);
+    expect(owner.mySelectedAction).toEqual(expect.objectContaining({
+      cardInstanceId: card.instanceId,
+    }));
+    expect(opponent.mySelectedAction).toBeNull();
     expect(opponent.players.find((player) => player.playerId === setup.host.credentials.playerId)?.usedCardCount).toBeNull();
     expect(JSON.stringify(opponent)).not.toContain(card.instanceId);
   });
@@ -189,17 +194,17 @@ describe("private round queue", () => {
     });
   });
 
-  it("emits queue changes, round lock, hidden count reveal, and one identical result payload", () => {
+  it("emits action changes, turn lock, hidden count reveal, and one identical result payload", () => {
     const manager = makeManager();
     const events: RoomManagerEvent[] = [];
     manager.onEvent((event) => events.push(event));
     const setup = startTwoPlayerGame(manager);
     const hostCard = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId).myHand[0]!;
-    manager.queueCard(setup.roomCode, setup.host.credentials.playerId, "socket-1", 1, queueInput(hostCard, setup.guest.credentials.playerId));
-    manager.confirmRound(setup.roomCode, setup.host.credentials.playerId, "socket-1", 1);
-    manager.confirmRound(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 1);
+    manager.selectAction(setup.roomCode, setup.host.credentials.playerId, "socket-1", 1, actionInput(hostCard, setup.guest.credentials.playerId));
+    manager.confirmAction(setup.roomCode, setup.host.credentials.playerId, "socket-1", 1);
+    manager.confirmAction(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 1);
 
-    expect(events.some((event) => event.type === "QUEUE_UPDATED")).toBe(true);
+    expect(events.some((event) => event.type === "ACTION_UPDATED")).toBe(true);
     expect(events.some((event) => event.type === "ROUND_LOCKED")).toBe(true);
     expect(events.find((event) => event.type === "CARD_COUNTS_REVEALED")).toMatchObject({
       cardCounts: expect.arrayContaining([
@@ -212,7 +217,7 @@ describe("private round queue", () => {
     expect(manager.getRoom(setup.roomCode)?.phase).toBe("RESOLVING_ROUND");
   });
 
-  it("auto-confirms missing players with zero cards after 60 seconds", () => {
+  it("auto-confirms missing players as PASS after 60 seconds", () => {
     const manager = makeManager();
     const setup = startTwoPlayerGame(manager);
     vi.advanceTimersByTime(60_000);
@@ -223,8 +228,8 @@ describe("private round queue", () => {
   it("waits for playback acknowledgements and then starts the next round", () => {
     const manager = makeManager();
     const setup = startTwoPlayerGame(manager);
-    manager.confirmRound(setup.roomCode, setup.host.credentials.playerId, "socket-1", 1);
-    manager.confirmRound(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 1);
+    manager.confirmAction(setup.roomCode, setup.host.credentials.playerId, "socket-1", 1);
+    manager.confirmAction(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 1);
     manager.eventsFinished(setup.roomCode, setup.host.credentials.playerId, "socket-1", 1);
     expect(manager.getRoom(setup.roomCode)?.phase).toBe("RESOLVING_ROUND");
     manager.eventsFinished(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 1);
@@ -234,16 +239,17 @@ describe("private round queue", () => {
 
   it("opens private two-card reward selection and honors the configured timeout", () => {
     const manager = makeManager();
-    const setup = startTwoPlayerGame(manager);
+    const setup = startTwoPlayerGame(manager, ["TACTICIAN", "BERSERKER"]);
     const room = manager.getRoom(setup.roomCode)!;
     room.game!.getState().roundNumber = 3;
-    manager.confirmRound(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
-    manager.confirmRound(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
+    manager.confirmAction(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
+    manager.confirmAction(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
     manager.eventsFinished(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
     manager.eventsFinished(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
     expect(room.phase).toBe("SELECTING_REWARD");
     const rewardView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
-    expect(rewardView.rewardOptions).toHaveLength(3);
+    expect(rewardView.rewardOptions).toHaveLength(4);
+    expect(new Set(rewardView.rewardOptions.map((card) => card.id)).size).toBe(4);
     const selectedIds = [
       rewardView.rewardOptions[0]!.id,
       rewardView.rewardOptions[2]!.id,
@@ -262,6 +268,9 @@ describe("private round queue", () => {
     expect(JSON.stringify(hiddenFromGuest)).not.toContain(selectedIds[1]);
     manager.disconnectSocket("socket-1");
     const restoredReward = manager.reconnectRoom(setup.host.credentials, "socket-reward");
+    expect(restoredReward.view.rewardOptions.map((card) => card.id)).toEqual(
+      rewardView.rewardOptions.map((card) => card.id),
+    );
     expect(restoredReward.view.selectedRewards.map((card) => card.id)).toEqual(selectedIds);
     manager.confirmReward(setup.roomCode, setup.host.credentials.playerId, "socket-reward");
     const selectedView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
@@ -286,8 +295,8 @@ describe("private round queue", () => {
         cardId: "BASE_GUARD",
       })));
     }
-    manager.confirmRound(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
-    manager.confirmRound(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
+    manager.confirmAction(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
+    manager.confirmAction(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
     manager.eventsFinished(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
     manager.eventsFinished(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
 
@@ -327,7 +336,7 @@ describe("private round queue", () => {
 });
 
 describe("reconnect, chat, and cleanup", () => {
-  it("restores the same private hand and queue with a valid reconnect token", () => {
+  it("restores the same private hand and selected action with a valid reconnect token", () => {
     const manager = makeManager();
     const setup = startTwoPlayerGame(manager);
     const before = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
@@ -358,6 +367,18 @@ describe("reconnect, chat, and cleanup", () => {
       { type: "CARD_DRAWN", playerId: "p1", count: 1, drawPileCount: 4, handCount: 3 },
       { type: "ROUND_STARTED", roundNumber: 1 },
     ]);
+  });
+
+  it("publishes one turn-resolution boundary without step metadata", () => {
+    const events = createPublicEvents([
+      { type: "TURN_RESOLUTION_STARTED", roundNumber: 1 },
+      { type: "TURN_RESOLUTION_FINISHED", roundNumber: 1 },
+    ]);
+    expect(events).toEqual([
+      { type: "TURN_RESOLUTION_STARTED", roundNumber: 1 },
+      { type: "TURN_RESOLUTION_FINISHED", roundNumber: 1 },
+    ]);
+    expect(JSON.stringify(events)).not.toMatch(/stepIndex|cancelled/i);
   });
 
   it("transfers host and removes abandoned rooms after cleanup TTL", () => {

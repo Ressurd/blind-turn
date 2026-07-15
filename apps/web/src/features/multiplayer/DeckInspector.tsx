@@ -10,10 +10,10 @@ import {
 export type DeckInspectorMode = "hand" | "draw" | "discard" | "all" | "removed";
 
 const MODE_COPY: Record<DeckInspectorMode, { eyebrow: string; title: string; description: string }> = {
-  hand: { eyebrow: "PRIVATE HAND", title: "손패", description: "현재 손에 있는 카드와 예약 상태입니다." },
+  hand: { eyebrow: "PRIVATE HAND", title: "손패", description: "현재 손에 있는 카드와 이번 턴 선택 상태입니다." },
   draw: { eyebrow: "PRIVATE DRAW PILE", title: "남은 덱", description: "카드 종류와 수량만 표시됩니다. 드로우 순서는 알 수 없습니다." },
   discard: { eyebrow: "PRIVATE GRAVE", title: "무덤 · 버린 카드", description: "사용하거나 버린 카드의 현재 구성입니다." },
-  all: { eyebrow: "FULL DECK", title: "전체 덱", description: "손패·덱·무덤·예약 중인 카드를 위치별로 합산합니다." },
+  all: { eyebrow: "FULL DECK", title: "전체 덱", description: "손패·덱·무덤·선택한 카드를 위치별로 합산합니다." },
   removed: { eyebrow: "PERMANENTLY REMOVED", title: "제거된 카드", description: "덱 정리에서 영구 제거되어 다시 섞이지 않는 카드입니다." },
 };
 
@@ -42,7 +42,7 @@ function SummaryCard({ summary, mode }: { summary: PrivateDeckCardSummary; mode:
           <li>손패 {summary.handCount}</li>
           <li>덱 {summary.drawPileCount}</li>
           <li>무덤 {summary.discardPileCount}</li>
-          <li>예약 {summary.queuedCount}</li>
+          <li>선택 {summary.selectedCount}</li>
         </ul>
       ) : null}
     </article>
@@ -101,13 +101,15 @@ export function DeckInspector(props: {
         {props.mode === "hand" ? (
           <div className="deckInspectGrid">
             {props.view.myHand.map((card) => {
-              const queued = props.view.myQueuedCards.find((entry) => entry.cardInstanceId === card.instanceId);
+              const selected = props.view.mySelectedAction?.cardInstanceId === card.instanceId
+                ? props.view.mySelectedAction
+                : null;
               return (
-                <article className={`deckInspectCard card-${card.definition.category.toLowerCase()} ${queued ? "reserved" : ""}`} key={card.instanceId}>
-                  <div><span>{card.definition.classId} · {card.definition.category}</span><b>{queued ? "예약됨" : "사용 가능"}</b></div>
+                <article className={`deckInspectCard card-${card.definition.category.toLowerCase()} ${selected ? "reserved" : ""}`} key={card.instanceId}>
+                  <div><span>{card.definition.classId} · {card.definition.category}</span><b>{selected ? "선택됨" : "사용 가능"}</b></div>
                   <h3>{card.definition.name}</h3><p>{card.definition.description}</p>
                   <small>대상 · {TARGET_LABEL[card.definition.targetType]}</small>
-                  {queued ? <em>{queued.order + 1}단계{queued.targetPlayerId ? ` → ${names[queued.targetPlayerId]}` : ""}</em> : null}
+                  {selected ? <em>이번 턴{selected.targetPlayerId ? ` → ${names[selected.targetPlayerId]}` : ""}</em> : null}
                 </article>
               );
             })}

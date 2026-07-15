@@ -88,9 +88,9 @@ function startGame(client: TestClient, roomCode: string): Promise<void> {
   });
 }
 
-function confirmRound(client: TestClient, roomCode: string, roundNumber: number): Promise<void> {
+function confirmAction(client: TestClient, roomCode: string, roundNumber: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    client.emit("game:confirm-round", { roomCode, roundNumber }, (response) => {
+    client.emit("game:confirm-action", { roomCode, roundNumber }, (response) => {
       if (response.ok) resolve();
       else reject(new Error(response.error.code));
     });
@@ -126,7 +126,7 @@ describe("Socket.IO V2 multiplayer flow", () => {
     expect(setup.server.roomManager.getRoom(setup.roomCode)?.phase).toBe("SELECTING_CARDS");
   });
 
-  it("keeps queued cards private and delivers one identical resolved round", async () => {
+  it("keeps the selected action private and delivers one identical resolved turn", async () => {
     const setup = await setupGame();
     const hostState = onceEvent(setup.hostClient, "room:state-updated");
     await startGame(setup.hostClient, setup.roomCode);
@@ -134,7 +134,7 @@ describe("Socket.IO V2 multiplayer flow", () => {
     const card = hostView.myHand[0]!;
     const guestId = setup.guest.credentials.playerId;
     await new Promise<void>((resolve, reject) => {
-      setup.hostClient.emit("game:queue-card", {
+      setup.hostClient.emit("game:select-action", {
         roomCode: setup.roomCode,
         roundNumber: 1,
         cardInstanceId: card.instanceId,
@@ -152,8 +152,8 @@ describe("Socket.IO V2 multiplayer flow", () => {
 
     const hostResolved = onceEvent(setup.hostClient, "game:round-resolved");
     const guestResolved = onceEvent(setup.guestClient, "game:round-resolved");
-    await confirmRound(setup.hostClient, setup.roomCode, 1);
-    await confirmRound(setup.guestClient, setup.roomCode, 1);
+    await confirmAction(setup.hostClient, setup.roomCode, 1);
+    await confirmAction(setup.guestClient, setup.roomCode, 1);
     const [first, second] = await Promise.all([hostResolved, guestResolved]);
     expect(first).toEqual(second);
     expect(first.roundNumber).toBe(1);

@@ -1,4 +1,4 @@
-import { HP_SCALE, MAX_CARDS_PER_ROUND, MAX_HAND_SIZE } from "../constants";
+import { HP_SCALE, MAX_HAND_SIZE } from "../constants";
 import { getCardDefinition } from "../cards/card-catalog";
 import {
   cloneCardInstance,
@@ -16,7 +16,7 @@ import type {
   DamageSource,
   GameState,
   PlayerState,
-  QueuedCardAction,
+  SelectedTurnAction,
 } from "../types";
 import {
   GameEngineError,
@@ -25,7 +25,7 @@ import {
 
 type ActiveAction = {
   player: PlayerState;
-  queued: QueuedCardAction;
+  selected: SelectedTurnAction;
   instance: ActionCardInstance;
   card: CardDefinition;
 };
@@ -93,14 +93,14 @@ function findPlayer(state: GameState, playerId: string): PlayerState {
 function attackDamage(
   action: ActiveAction,
   target: PlayerState,
-  stepStartHp: Readonly<Record<string, number>>,
+    turnStartHp: Readonly<Record<string, number>>,
 ): number {
   const effect = action.card.effect;
   let damage = effect.damage ?? 0;
   if (action.player.characterId === "BERSERKER") damage += HP_SCALE;
   if (
     effect.special === "EXECUTE"
-    && stepStartHp[target.id]! <= (effect.executeThreshold ?? 0)
+    && turnStartHp[target.id]! <= (effect.executeThreshold ?? 0)
   ) {
     damage += effect.executeBonusDamage ?? 0;
   }
@@ -134,7 +134,7 @@ function applyUtilityAction(
     return;
   }
   if (effect.kind === "RECYCLE") {
-    const selection = action.queued.additionalSelection;
+    const selection = action.selected.additionalSelection;
     if (!selection || !("discardCardInstanceId" in selection)) return;
     if (player.deckState.hand.length >= MAX_HAND_SIZE) return;
     const index = player.deckState.discardPile.findIndex(
@@ -146,7 +146,7 @@ function applyUtilityAction(
     return;
   }
   if (effect.kind === "MULLIGAN") {
-    const selection = action.queued.additionalSelection;
+    const selection = action.selected.additionalSelection;
     if (!selection || !("handCardInstanceIds" in selection)) return;
     let moved = 0;
     for (const instanceId of selection.handCardInstanceIds) {
@@ -169,7 +169,7 @@ function applyUtilityAction(
     const drawn = drawCards(player.deckState, effect.draw ?? 2, randomSource);
     player.deckState = drawn.state;
     appendDrawEvents(events, player.id, drawn);
-    const selection = action.queued.additionalSelection;
+    const selection = action.selected.additionalSelection;
     if (!selection || !("returnCardInstanceId" in selection)) return;
     const index = player.deckState.hand.findIndex(
       (card) => card.instanceId === selection.returnCardInstanceId,
@@ -180,20 +180,18 @@ function applyUtilityAction(
   }
 }
 
-function resolveStep(
+function resolveTurn(
   state: GameState,
-  stepIndex: number,
   randomSource: RandomSource,
   events: BattleEvent[],
   usedCards: Map<string, ActionCardInstance[]>,
   returnToHand: Set<string>,
 ): void {
   events.push({
-    type: "STEP_STARTED",
+    type: "TURN_RESOLUTION_STARTED",
     roundNumber: state.roundNumber,
-    stepIndex,
   });
-  const stepStartHp = Object.fromEntries(
+  const turnStartHp = Object.fromEntries(
     state.players.map((player) => [player.id, player.hp]),
   );
   const activeActions: ActiveAction[] = [];
@@ -201,34 +199,20 @@ function resolveStep(
   for (const player of [...state.players].sort(
     (left, right) => left.seatNumber - right.seatNumber,
   )) {
-    const queued = player.deckState.queuedCards.find(
-      (candidate) => candidate.order === stepIndex,
-    );
-    if (!queued) continue;
-    if (!player.alive) {
-      events.push({
-        type: "CARD_CANCELLED",
-        roundNumber: state.roundNumber,
-        stepIndex,
-        playerId: player.id,
-        cardInstanceId: queued.cardInstanceId,
-        reason: "PLAYER_DEAD",
-      });
-      continue;
-    }
+    const selected = player.deckState.selectedAction;
+    if (!selected || !player.alive) continue;
     const instance = player.deckState.hand.find(
-      (candidate) => candidate.instanceId === queued.cardInstanceId,
+      (candidate) => candidate.instanceId === selected.cardInstanceId,
     );
     if (!instance) throw new GameEngineError("CARD_NOT_IN_HAND");
     const card = getCardDefinition(instance.cardId);
     events.push({
       type: "CARD_REVEALED",
       roundNumber: state.roundNumber,
-      stepIndex,
       playerId: player.id,
       cardInstanceId: instance.instanceId,
       cardId: instance.cardId,
-      ...(queued.targetPlayerId ? { targetPlayerId: queued.targetPlayerId } : {}),
+      ...(selected.targetPlayerId ? { targetPlayerId: selected.targetPlayerId } : {}),
     });
     const removed = removeCardInstance(player.deckState, instance.instanceId);
     if (!removed.removed) throw new GameEngineError("CARD_NOT_IN_HAND");
@@ -239,38 +223,27 @@ function resolveStep(
 
     if (card.targetType === "ENEMY") {
       const target = state.players.find(
-        (candidate) => candidate.id === queued.targetPlayerId,
+        (candidate) => candidate.id === selected.targetPlayerId,
       );
-      if (!target?.alive) {
-        events.push({
-          type: "CARD_CANCELLED",
-          roundNumber: state.roundNumber,
-          stepIndex,
-          playerId: player.id,
-          cardInstanceId: instance.instanceId,
-          reason: "TARGET_DEAD",
-        });
-        continue;
-      }
+      if (!target?.alive) throw new GameEngineError("INVALID_CARD_TARGET");
     }
-    activeActions.push({ player, queued, instance, card });
+    activeActions.push({ player, selected, instance, card });
   }
 
   const attackActions: AttackAction[] = activeActions
     .filter((action) => action.card.effect.kind === "ATTACK")
     .map((action) => {
-      const target = findPlayer(state, action.queued.targetPlayerId!);
+      const target = findPlayer(state, action.selected.targetPlayerId!);
       const attack: AttackAction = {
         ...action,
         targetId: target.id,
-        damage: attackDamage(action, target, stepStartHp),
+        damage: attackDamage(action, target, turnStartHp),
         clashBonus: action.card.effect.clashBonus ?? 0,
         evadeDifficulty: action.card.effect.evadeDifficulty ?? 10,
         guardPierce: action.card.effect.guardPierce ?? 0,
       };
       events.push({
         type: "ATTACK_STARTED",
-        stepIndex,
         attackerId: action.player.id,
         targetId: target.id,
         cardId: action.card.id,
@@ -297,7 +270,6 @@ function resolveStep(
     resolvedAttackers.add(reciprocal.player.id);
     events.push({
       type: "CLASH_STARTED",
-      stepIndex,
       playerIds: [attack.player.id, reciprocal.player.id],
       cardIds: [attack.card.id, reciprocal.card.id],
     });
@@ -315,7 +287,6 @@ function resolveStep(
       events.push(
         {
           type: "CLASH_ROLLED",
-          stepIndex,
           playerId: attack.player.id,
           roll: firstRoll,
           bonus: firstBonus,
@@ -323,7 +294,6 @@ function resolveStep(
         },
         {
           type: "CLASH_ROLLED",
-          stepIndex,
           playerId: reciprocal.player.id,
           roll: secondRoll,
           bonus: secondBonus,
@@ -338,7 +308,6 @@ function resolveStep(
     if (!winner || !loser) throw new Error("Clash did not resolve");
     events.push({
       type: "CLASH_RESOLVED",
-      stepIndex,
       winnerId: winner.player.id,
       loserId: loser.player.id,
     });
@@ -360,7 +329,7 @@ function resolveStep(
     .filter((action) => action.card.effect.kind === "COUNTER")
     .sort((left, right) => left.player.seatNumber - right.player.seatNumber);
   for (const counter of counterActions) {
-    const designatedId = counter.queued.targetPlayerId!;
+    const designatedId = counter.selected.targetPlayerId!;
     const triggeringAttack = attackActions.find(
       (attack) =>
         attack.player.id === designatedId
@@ -385,7 +354,6 @@ function resolveStep(
     );
     events.push({
       type: "COUNTER_TRIGGERED",
-      stepIndex,
       counterPlayerId: counter.player.id,
       attackerId: triggeringAttack.player.id,
       attackerDamage,
@@ -435,7 +403,6 @@ function resolveStep(
       const succeeded = roll + bonus >= packet.evadeDifficulty;
       events.push({
         type: "EVADE_ROLLED",
-        stepIndex,
         playerId: evade.player.id,
         attackerId: packet.attackerId,
         roll,
@@ -450,7 +417,7 @@ function resolveStep(
       packet.damage = evade.card.effect.evadeFailureDamage ?? 20;
       packet.source = "EVADE_FAILURE";
       active = false;
-      events.push({ type: "EVADE_FAILED", stepIndex, playerId: evade.player.id });
+      events.push({ type: "EVADE_FAILED", playerId: evade.player.id });
     }
   }
 
@@ -474,7 +441,6 @@ function resolveStep(
     if (guard?.card.effect.kind === "LAST_STAND") {
       events.push({
         type: "GUARD_ACTIVATED",
-        stepIndex,
         playerId: player.id,
         reduction: 0,
         mode: "LAST_STAND",
@@ -491,7 +457,6 @@ function resolveStep(
         );
         events.push({
           type: "GUARD_ACTIVATED",
-          stepIndex,
           playerId: player.id,
           reduction: effect.perAttackReduction ?? 0,
           mode: "PER_ATTACK",
@@ -506,7 +471,6 @@ function resolveStep(
         finalDamage = Math.max(0, incomingDamage - effectiveReduction);
         events.push({
           type: "GUARD_ACTIVATED",
-          stepIndex,
           playerId: player.id,
           reduction: requestedReduction,
           mode: "TOTAL",
@@ -520,7 +484,6 @@ function resolveStep(
       }
       events.push({
         type: "GUARD_RESOLVED",
-        stepIndex,
         playerId: player.id,
         incomingDamage,
         reducedDamage: incomingDamage - finalDamage,
@@ -553,10 +516,10 @@ function resolveStep(
   }
 
   const results = state.players
-    .filter((player) => stepStartHp[player.id]! > 0)
+    .filter((player) => turnStartHp[player.id]! > 0)
     .map((player) => {
       const heal = heals.get(player.id) ?? 0;
-      const healedHp = Math.min(player.maxHp, stepStartHp[player.id]! + heal);
+      const healedHp = Math.min(player.maxHp, turnStartHp[player.id]! + heal);
       const attackDamage = attackDamageTotals.get(player.id) ?? 0;
       const special = specialPackets.filter((packet) => packet.playerId === player.id);
       const specialDamage = special.reduce((sum, packet) => sum + packet.damage, 0);
@@ -595,7 +558,6 @@ function resolveStep(
     if (result.heal > 0) {
       events.push({
         type: "HEAL_APPLIED",
-        stepIndex,
         playerId: result.player.id,
         amount: result.heal,
         remainingHp: result.healedHp,
@@ -604,7 +566,6 @@ function resolveStep(
     if (result.damage > 0) {
       events.push({
         type: "DAMAGE_APPLIED",
-        stepIndex,
         playerId: result.player.id,
         damage: result.damage,
         remainingHp: result.remainingHp,
@@ -614,7 +575,6 @@ function resolveStep(
     if (result.lastStandTriggered) {
       events.push({
         type: "LAST_STAND_TRIGGERED",
-        stepIndex,
         playerId: result.player.id,
       });
     }
@@ -624,12 +584,11 @@ function resolveStep(
     result.player.alive = result.remainingHp > 0;
   }
   for (const result of results.filter((candidate) => !candidate.player.alive)) {
-    events.push({ type: "PLAYER_DIED", stepIndex, playerId: result.player.id });
+    events.push({ type: "PLAYER_DIED", playerId: result.player.id });
   }
   events.push({
-    type: "STEP_FINISHED",
+    type: "TURN_RESOLUTION_FINISHED",
     roundNumber: state.roundNumber,
-    stepIndex,
   });
 }
 
@@ -654,35 +613,20 @@ export function resolveRound(
         .filter((player) => player.alive)
         .map((player) => ({
           playerId: player.id,
-          count: player.deckState.queuedCards.length,
+          count: player.deckState.selectedAction ? 1 : 0,
         })),
     },
   ];
   const usedCards = new Map<string, ActionCardInstance[]>();
   const returnToHand = new Set<string>();
-
-  for (let stepIndex = 0; stepIndex < MAX_CARDS_PER_ROUND; stepIndex += 1) {
-    const hasCards = next.players.some((player) =>
-      player.deckState.queuedCards.some((queued) => queued.order === stepIndex)
-    );
-    if (!hasCards) continue;
-    resolveStep(
-      next,
-      stepIndex,
-      randomSource,
-      events,
-      usedCards,
-      returnToHand,
-    );
-    if (next.players.filter((player) => player.alive).length <= 1) break;
-  }
+  resolveTurn(next, randomSource, events, usedCards, returnToHand);
 
   for (const player of next.players) {
     for (const card of usedCards.get(player.id) ?? []) {
       if (returnToHand.has(card.instanceId)) player.deckState.hand.push(card);
       else player.deckState.discardPile.push(card);
     }
-    player.deckState.queuedCards = [];
+    player.deckState.selectedAction = null;
     player.deckState.confirmed = false;
   }
   next.pendingEvents = [];

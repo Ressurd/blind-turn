@@ -18,7 +18,7 @@ import {
   type CharacterClassId,
   type ChatMessage,
   type PlayerGameView,
-  type QueuedCardAction,
+  type SelectedTurnAction,
   type RoundResolvedPayload,
   type RoundSubmissionStatusPayload,
   type SessionCredentials,
@@ -49,10 +49,10 @@ export type RoomManagerEvent =
     }
   | { type: "GAME_STARTED"; roomCode: string; roundNumber: number }
   | {
-      type: "QUEUE_UPDATED";
+      type: "ACTION_UPDATED";
       roomCode: string;
       playerId: string;
-      queuedCards: QueuedCardAction[];
+      selectedAction: SelectedTurnAction | null;
     }
   | {
       type: "ROUND_SUBMISSION_STATUS";
@@ -317,84 +317,30 @@ export class RoomManager {
     this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
   }
 
-  selectInitialHand(
-    roomCode: string,
-    playerId: string,
-    socketId: string,
-    selectedInstanceIds: string[],
-  ): void {
-    const room = this.getRoomOrThrow(roomCode);
-    this.assertOwnership(room, playerId, socketId);
-    if (room.phase !== "ROUND_STARTING" || !room.game) {
-      throw new RoomError("INVALID_GAME_PHASE");
-    }
-    room.game.selectInitialHand(playerId, selectedInstanceIds);
-    const state = room.game.getState();
-    if (state.phase === "SELECTING_CARDS") {
-      room.phase = "SELECTING_CARDS";
-      this.scheduleActionTimer(room, state.roundNumber);
-      this.emit({
-        type: "NEXT_ROUND",
-        roomCode: room.roomCode,
-        roundNumber: state.roundNumber,
-        actionDeadlineAt: room.actionDeadlineAt!,
-      });
-      this.emitSubmissionStatus(room);
-    }
-    this.touch(room);
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-  }
-
-  queueCard(
+  selectAction(
     roomCode: string,
     playerId: string,
     socketId: string,
     roundNumber: number,
-    input: Omit<QueuedCardAction, "order"> & { order?: 0 | 1 | 2 },
+    input: SelectedTurnAction,
   ): void {
     const room = this.requireSelectingRoom(roomCode, playerId, socketId);
-    room.game!.queue(playerId, roundNumber, input);
-    this.emitQueueUpdated(room, playerId);
+    room.game!.select(playerId, roundNumber, input);
+    this.emitActionUpdated(room, playerId);
   }
 
-  moveQueuedCard(
+  clearAction(
     roomCode: string,
     playerId: string,
     socketId: string,
     roundNumber: number,
-    cardInstanceId: string,
-    order: 0 | 1 | 2,
   ): void {
     const room = this.requireSelectingRoom(roomCode, playerId, socketId);
-    room.game!.moveQueued(playerId, roundNumber, cardInstanceId, order);
-    this.emitQueueUpdated(room, playerId);
+    room.game!.clear(playerId, roundNumber);
+    this.emitActionUpdated(room, playerId);
   }
 
-  removeQueuedCard(
-    roomCode: string,
-    playerId: string,
-    socketId: string,
-    roundNumber: number,
-    cardInstanceId: string,
-  ): void {
-    const room = this.requireSelectingRoom(roomCode, playerId, socketId);
-    room.game!.removeQueued(playerId, roundNumber, cardInstanceId);
-    this.emitQueueUpdated(room, playerId);
-  }
-
-  reorderQueuedCards(
-    roomCode: string,
-    playerId: string,
-    socketId: string,
-    roundNumber: number,
-    orderedInstanceIds: string[],
-  ): void {
-    const room = this.requireSelectingRoom(roomCode, playerId, socketId);
-    room.game!.reorderQueued(playerId, roundNumber, orderedInstanceIds);
-    this.emitQueueUpdated(room, playerId);
-  }
-
-  confirmRound(
+  confirmAction(
     roomCode: string,
     playerId: string,
     socketId: string,
@@ -750,14 +696,16 @@ export class RoomManager {
     return room;
   }
 
-  private emitQueueUpdated(room: RoomState, playerId: string): void {
+  private emitActionUpdated(room: RoomState, playerId: string): void {
     const player = room.game!.getState().players.find((candidate) => candidate.id === playerId);
     this.touch(room);
     this.emit({
-      type: "QUEUE_UPDATED",
+      type: "ACTION_UPDATED",
       roomCode: room.roomCode,
       playerId,
-      queuedCards: player?.deckState.queuedCards.map((queued) => ({ ...queued })) ?? [],
+      selectedAction: player?.deckState.selectedAction
+        ? { ...player.deckState.selectedAction }
+        : null,
     });
     this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
   }
@@ -792,7 +740,7 @@ export class RoomManager {
       .filter((player) => player.alive)
       .map((player) => ({
         playerId: player.id,
-        count: player.deckState.queuedCards.length,
+        count: player.deckState.selectedAction ? 1 : 0,
       }));
     room.lockedCardCounts = new Map(
       cardCounts.map(({ playerId, count }) => [playerId, count]),

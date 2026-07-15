@@ -67,17 +67,16 @@ export type ActionCardInstance = {
   cardId: string;
 };
 
-export type QueuedCardAdditionalSelection =
+export type SelectedActionAdditionalSelection =
   | { discardCardInstanceId: string }
   | { handCardInstanceIds: string[] }
   | { returnCardInstanceId: string }
   | null;
 
-export type QueuedCardAction = {
+export type SelectedTurnAction = {
   cardInstanceId: string;
-  order: 0 | 1 | 2;
   targetPlayerId?: string;
-  additionalSelection?: QueuedCardAdditionalSelection;
+  additionalSelection?: SelectedActionAdditionalSelection;
 };
 
 export type PlayerDeckState = {
@@ -85,7 +84,7 @@ export type PlayerDeckState = {
   hand: ActionCardInstance[];
   discardPile: ActionCardInstance[];
   permanentlyRemovedCards: ActionCardInstance[];
-  queuedCards: QueuedCardAction[];
+  selectedAction: SelectedTurnAction | null;
   confirmed: boolean;
   pendingRewardOptions: string[];
   selectedRewardCardIds: string[];
@@ -94,7 +93,6 @@ export type PlayerDeckState = {
   selectedRemovalInstanceIds: string[];
   newlyAddedCardInstanceIds: string[];
   deckRemovalConfirmed: boolean;
-  pendingInitialHandSelection: ActionCardInstance[];
   nextInstanceNumber: number;
 };
 
@@ -141,27 +139,17 @@ export type BattleEvent =
       roundNumber: number;
       cardCounts: Array<{ playerId: string; count: number }>;
     }
-  | { type: "STEP_STARTED"; roundNumber: number; stepIndex: number }
+  | { type: "TURN_RESOLUTION_STARTED"; roundNumber: number }
   | {
       type: "CARD_REVEALED";
       roundNumber: number;
-      stepIndex: number;
       playerId: string;
       cardInstanceId: string;
       cardId: string;
       targetPlayerId?: string;
     }
   | {
-      type: "CARD_CANCELLED";
-      roundNumber: number;
-      stepIndex: number;
-      playerId: string;
-      cardInstanceId: string;
-      reason: "PLAYER_DEAD" | "TARGET_DEAD";
-    }
-  | {
       type: "ATTACK_STARTED";
-      stepIndex: number;
       attackerId: string;
       targetId: string;
       cardId: string;
@@ -169,13 +157,11 @@ export type BattleEvent =
     }
   | {
       type: "CLASH_STARTED";
-      stepIndex: number;
       playerIds: [string, string];
       cardIds: [string, string];
     }
   | {
       type: "CLASH_ROLLED";
-      stepIndex: number;
       playerId: string;
       roll: number;
       bonus: number;
@@ -183,20 +169,17 @@ export type BattleEvent =
     }
   | {
       type: "CLASH_RESOLVED";
-      stepIndex: number;
       winnerId: string;
       loserId: string;
     }
   | {
       type: "GUARD_ACTIVATED";
-      stepIndex: number;
       playerId: string;
       reduction: number;
       mode: "TOTAL" | "PER_ATTACK" | "LAST_STAND";
     }
   | {
       type: "GUARD_RESOLVED";
-      stepIndex: number;
       playerId: string;
       incomingDamage: number;
       reducedDamage: number;
@@ -204,7 +187,6 @@ export type BattleEvent =
     }
   | {
       type: "EVADE_ROLLED";
-      stepIndex: number;
       playerId: string;
       attackerId: string;
       roll: number;
@@ -212,10 +194,9 @@ export type BattleEvent =
       difficulty: number;
       succeeded: boolean;
     }
-  | { type: "EVADE_FAILED"; stepIndex: number; playerId: string }
+  | { type: "EVADE_FAILED"; playerId: string }
   | {
       type: "COUNTER_TRIGGERED";
-      stepIndex: number;
       counterPlayerId: string;
       attackerId: string;
       attackerDamage: number;
@@ -223,22 +204,20 @@ export type BattleEvent =
     }
   | {
       type: "HEAL_APPLIED";
-      stepIndex: number;
       playerId: string;
       amount: number;
       remainingHp: number;
     }
   | {
       type: "DAMAGE_APPLIED";
-      stepIndex: number;
       playerId: string;
       damage: number;
       remainingHp: number;
       source: DamageSource;
     }
-  | { type: "LAST_STAND_TRIGGERED"; stepIndex: number; playerId: string }
-  | { type: "PLAYER_DIED"; stepIndex: number; playerId: string }
-  | { type: "STEP_FINISHED"; roundNumber: number; stepIndex: number }
+  | { type: "LAST_STAND_TRIGGERED"; playerId: string }
+  | { type: "PLAYER_DIED"; playerId: string }
+  | { type: "TURN_RESOLUTION_FINISHED"; roundNumber: number }
   | { type: "ROUND_FINISHED"; roundNumber: number }
   | {
       type: "DISCARD_RESHUFFLE_STARTED";
@@ -269,9 +248,6 @@ export type GameState = {
 
 export type GameErrorCode =
   | "CARD_NOT_IN_HAND"
-  | "CARD_ALREADY_QUEUED"
-  | "MAX_QUEUED_CARDS_EXCEEDED"
-  | "INVALID_QUEUE_ORDER"
   | "INVALID_CARD_TARGET"
   | "INVALID_ADDITIONAL_SELECTION"
   | "ROUND_ALREADY_CONFIRMED"
@@ -281,5 +257,4 @@ export type GameErrorCode =
   | "REWARD_OPTION_NOT_FOUND"
   | "INVALID_REWARD_SELECTION"
   | "INVALID_DECK_REMOVAL"
-  | "ATTACK_CARD_REQUIRED"
-  | "INITIAL_HAND_SELECTION_REQUIRED";
+  | "ATTACK_CARD_REQUIRED";

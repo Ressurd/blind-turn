@@ -2,6 +2,8 @@ import {
   MAX_COPIES_PER_CARD_ID,
   MAX_TOTAL_DECK_SIZE,
   REWARD_SELECTION_COUNT,
+  REWARD_OPTION_COUNT,
+  TACTICIAN_REWARD_OPTION_COUNT,
 } from "../constants";
 import {
   getCardDefinition,
@@ -57,13 +59,25 @@ export function prepareRewardOptions(
       player,
       pool.commonCards.map((card) => card.id),
     );
-    if (classIds.length < 2 || commonIds.length < 1) {
+    const classOptionCount = player.characterId === "TACTICIAN" ? 3 : 2;
+    const optionCount = player.characterId === "TACTICIAN"
+      ? TACTICIAN_REWARD_OPTION_COUNT
+      : REWARD_OPTION_COUNT;
+    const selectedClassIds = randomSource
+      .shuffle(classIds)
+      .slice(0, classOptionCount);
+    const shuffledCommonIds = randomSource.shuffle(commonIds);
+    const options = [
+      ...selectedClassIds,
+      ...shuffledCommonIds.slice(0, 1),
+    ];
+    if (options.length < optionCount) {
+      options.push(...shuffledCommonIds.slice(1, 1 + optionCount - options.length));
+    }
+    if (new Set(options).size !== options.length || options.length < optionCount) {
       throw new Error(`Not enough reward cards for ${player.id}`);
     }
-    player.deckState.pendingRewardOptions = [
-      ...randomSource.shuffle(classIds).slice(0, 2),
-      ...randomSource.shuffle(commonIds).slice(0, 1),
-    ];
+    player.deckState.pendingRewardOptions = options;
     player.deckState.selectedRewardCardIds = [];
     player.deckState.rewardConfirmed = false;
     player.deckState.requiredRemovalCount = 0;

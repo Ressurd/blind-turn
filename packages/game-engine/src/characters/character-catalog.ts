@@ -14,7 +14,7 @@ export const CHARACTER_CATALOG: Record<CharacterClassId, CharacterDefinition> = 
     id: "DUELIST",
     name: "결투가",
     passive: "모든 합 최종값에 +1을 얻습니다.",
-    playStyle: "속공과 일대일 합에 강합니다.",
+    playStyle: "빠른 공격과 합에 강합니다.",
     maxHp: MAX_HP,
   },
   BERSERKER: {
@@ -34,8 +34,8 @@ export const CHARACTER_CATALOG: Record<CharacterClassId, CharacterDefinition> = 
   TACTICIAN: {
     id: "TACTICIAN",
     name: "전술가",
-    passive: "시작 카드 6장을 보고 5장을 선택합니다.",
-    playStyle: "손패 순환과 카드 회수에 강합니다.",
+    passive: "성장 때 직업 카드 3장과 공용 카드 1장 중 2장을 선택합니다.",
+    playStyle: "더 넓은 성장 선택지로 덱을 정교하게 설계합니다.",
     maxHp: MAX_HP,
   },
 };

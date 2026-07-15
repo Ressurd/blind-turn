@@ -18,9 +18,7 @@ const privateCard = (card: { instanceId: string; cardId: string }) => ({
 });
 
 function summarizeDeck(state: PlayerDeckState): PrivateDeckCardSummary[] {
-  const queuedIds = new Set(
-    state.queuedCards.map((queued) => queued.cardInstanceId),
-  );
+  const selectedId = state.selectedAction?.cardInstanceId ?? null;
   const summaries = new Map<string, PrivateDeckCardSummary>();
   const add = (
     card: { cardId: string; instanceId: string },
@@ -37,12 +35,12 @@ function summarizeDeck(state: PlayerDeckState): PrivateDeckCardSummary[] {
       handCount: 0,
       drawPileCount: 0,
       discardPileCount: 0,
-      queuedCount: 0,
+      selectedCount: 0,
       removedCount: 0,
     };
     if (location !== "removedCount") current.totalCount += 1;
-    if (location === "handCount" && queuedIds.has(card.instanceId)) {
-      current.queuedCount += 1;
+    if (location === "handCount" && selectedId === card.instanceId) {
+      current.selectedCount += 1;
     } else {
       current[location] += 1;
     }
@@ -109,12 +107,14 @@ export function createPlayerView(
       ? summarizeDeck(gamePlayer.deckState).filter((summary) => summary.drawPileCount > 0)
       : [],
     myDeckSummary: gamePlayer ? summarizeDeck(gamePlayer.deckState) : [],
-    myQueuedCards: gamePlayer?.deckState.queuedCards.map((queued) => ({
-      ...queued,
-      additionalSelection: queued.additionalSelection
-        ? JSON.parse(JSON.stringify(queued.additionalSelection)) as typeof queued.additionalSelection
-        : null,
-    })) ?? [],
+    mySelectedAction: gamePlayer?.deckState.selectedAction
+      ? {
+          ...gamePlayer.deckState.selectedAction,
+          additionalSelection: gamePlayer.deckState.selectedAction.additionalSelection
+            ? JSON.parse(JSON.stringify(gamePlayer.deckState.selectedAction.additionalSelection)) as typeof gamePlayer.deckState.selectedAction.additionalSelection
+            : null,
+        }
+      : null,
     myConfirmed: gamePlayer?.deckState.confirmed ?? false,
     drawPileCount: gamePlayer?.deckState.drawPile.length ?? 0,
     discardPileCount: gamePlayer?.deckState.discardPile.length ?? 0,
@@ -122,9 +122,17 @@ export function createPlayerView(
     permanentlyRemovedCount:
       gamePlayer?.deckState.permanentlyRemovedCards.length ?? 0,
     maxDeckSize: MAX_TOTAL_DECK_SIZE,
-    initialHandOptions:
-      gamePlayer?.deckState.pendingInitialHandSelection.map(privateCard) ?? [],
     rewardOptions: gamePlayer?.deckState.pendingRewardOptions.map(getCardDefinition) ?? [],
+    rewardSelectionState:
+      state && gamePlayer && room.phase === "SELECTING_REWARD"
+        ? {
+            roundNumber: state.roundNumber,
+            options: gamePlayer.deckState.pendingRewardOptions.map(getCardDefinition),
+            selectedCardIds: [...gamePlayer.deckState.selectedRewardCardIds],
+            requiredSelectionCount: 2,
+            deadlineAt: room.rewardDeadlineAt ?? 0,
+          }
+        : null,
     selectedRewards:
       gamePlayer?.deckState.selectedRewardCardIds.map(getCardDefinition) ?? [],
     rewardSelectionConfirmed:

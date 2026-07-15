@@ -9,12 +9,12 @@ export const GUARDIAN_MAX_HP = 35 * HP_SCALE;
 export const INITIAL_TOTAL_DECK_SIZE = 10;
 export const MAX_TOTAL_DECK_SIZE = 15;
 export const INITIAL_HAND_SIZE = 5;
-export const TACTICIAN_INITIAL_DRAW_SIZE = 6;
 export const MAX_HAND_SIZE = 5;
-export const MAX_CARDS_PER_ROUND = 3;
+export const MAX_CARDS_PER_TURN = 1;
 export const MAX_COPIES_PER_CARD_ID = 2;
 export const REWARD_SELECTION_COUNT = 2;
 export const REWARD_OPTION_COUNT = 3;
+export const TACTICIAN_REWARD_OPTION_COUNT = 4;
 
 export const ACTION_TIMEOUT_MS = 60_000;
 export const REWARD_TIMEOUT_MS = 60_000;

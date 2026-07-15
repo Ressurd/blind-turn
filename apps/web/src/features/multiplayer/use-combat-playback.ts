@@ -15,7 +15,7 @@ import {
 
 export type CombatPlaybackStage =
   | "idle"
-  | "step-intro"
+  | "turn-intro"
   | "reveal"
   | "focus"
   | "reshuffle-start"
@@ -40,14 +40,14 @@ export type CombatPlaybackStage =
   | "transition";
 
 export type PlaybackPhase =
-  | "STEP_INTRO"
+  | "TURN_INTRO"
   | "REVEALING_CARDS"
   | "FOCUSING_INTERACTION"
   | "PLAYING_INTERACTION"
   | "SHOWING_RESULT"
-  | "APPLYING_STEP_DAMAGE"
-  | "SHOWING_STEP_SUMMARY"
-  | "STEP_TRANSITION"
+  | "APPLYING_TURN_DAMAGE"
+  | "SHOWING_TURN_SUMMARY"
+  | "TURN_TRANSITION"
   | "IDLE";
 
 export type CombatPlaybackSpeed = 1 | 1.5 | 2;
@@ -79,10 +79,13 @@ export type PlaybackStep = {
   clashAttemptIndex?: number;
 };
 
-export const PLAYBACK_BEAT_MS = 600;
+export const PLAYBACK_BEAT_MS = 750;
+export const CLASH_ROULETTE_TICK_MS = 70;
+export const CLASH_ROULETTE_TOTAL_MS = 1_800;
+export const CLASH_ROULETTE_SLOWDOWN_MS = 350;
 
 export const COMBAT_PLAYBACK_BEATS = {
-  stepIntro: 1,
+  turnIntro: 1,
   cardReveal: 1,
   focus: 1,
   interaction: 2,
@@ -92,11 +95,12 @@ export const COMBAT_PLAYBACK_BEATS = {
   clashModifiers: 1,
   clashCompare: 1,
   clashTie: 1,
-  clashWinner: 1,
+  clashWinner: 2,
+  clashDamage: 2,
   damage: 1,
   death: 1,
   result: 1,
-  stepSummary: 2,
+  turnSummary: 2,
   transition: 1,
   reshuffleStart: 1,
   reshuffleShuffle: 2,
@@ -125,16 +129,23 @@ function beatStep(
   return { stage, durationMs: PLAYBACK_BEAT_MS * beats };
 }
 
+function rouletteStep(
+  stage: "clash-first-roll" | "clash-second-roll",
+  clashAttemptIndex: number,
+): PlaybackStep {
+  return { stage, durationMs: CLASH_ROULETTE_TOTAL_MS, clashAttemptIndex };
+}
+
 export function playbackPhaseForStage(stage: CombatPlaybackStage): PlaybackPhase {
-  if (stage === "step-intro") return "STEP_INTRO";
+  if (stage === "turn-intro") return "TURN_INTRO";
   if (stage === "reveal") return "REVEALING_CARDS";
   if (stage === "focus") return "FOCUSING_INTERACTION";
   if (["roll", "impact", "clash-intro", "clash-first-roll", "clash-first-result", "clash-second-roll", "clash-second-result", "clash-modifiers", "reshuffle-start", "reshuffle-shuffle", "reshuffle-complete", "draw"].includes(stage)) return "PLAYING_INTERACTION";
   if (["clash-compare", "clash-tie", "clash-winner"].includes(stage)) return "SHOWING_RESULT";
-  if (stage === "damage") return "APPLYING_STEP_DAMAGE";
+  if (stage === "damage") return "APPLYING_TURN_DAMAGE";
   if (stage === "death" || stage === "result") return "SHOWING_RESULT";
-  if (stage === "summary") return "SHOWING_STEP_SUMMARY";
-  if (stage === "transition") return "STEP_TRANSITION";
+  if (stage === "summary") return "SHOWING_TURN_SUMMARY";
+  if (stage === "transition") return "TURN_TRANSITION";
   return "IDLE";
 }
 
@@ -168,20 +179,20 @@ export function getCombatPlaybackSteps(
   reducedMotion = false,
 ): PlaybackStep[] {
   if (sequence.type === "ROUND") {
-    return [beatStep("step-intro", COMBAT_PLAYBACK_BEATS.stepIntro)];
+    return [beatStep("turn-intro", COMBAT_PLAYBACK_BEATS.turnIntro)];
   }
   if (sequence.type === "ROUND_SUMMARY") {
-    return [beatStep("summary", COMBAT_PLAYBACK_BEATS.stepSummary)];
+    return [beatStep("summary", COMBAT_PLAYBACK_BEATS.turnSummary)];
   }
   if (sequence.type === "GAME_OVER") {
     return [
-      beatStep("step-intro", COMBAT_PLAYBACK_BEATS.stepIntro),
-      beatStep("result", COMBAT_PLAYBACK_BEATS.stepSummary),
+      beatStep("turn-intro", COMBAT_PLAYBACK_BEATS.turnIntro),
+      beatStep("result", COMBAT_PLAYBACK_BEATS.turnSummary),
     ];
   }
   if (sequence.type === "DECK") {
     const deckSteps: PlaybackStep[] = [
-      beatStep("step-intro", COMBAT_PLAYBACK_BEATS.stepIntro),
+      beatStep("turn-intro", COMBAT_PLAYBACK_BEATS.turnIntro),
     ];
     if (sequence.reshuffles.length > 0) {
       deckSteps.push(
@@ -197,27 +208,21 @@ export function getCombatPlaybackSteps(
     return deckSteps;
   }
   const steps: PlaybackStep[] = [
-    beatStep("step-intro", COMBAT_PLAYBACK_BEATS.stepIntro),
+    beatStep("turn-intro", COMBAT_PLAYBACK_BEATS.turnIntro),
     beatStep("reveal", COMBAT_PLAYBACK_BEATS.cardReveal),
   ];
   if (sequence.outcome === "CLASH" && sequence.clash?.attempts.length) {
     steps.push(beatStep("clash-intro", COMBAT_PLAYBACK_BEATS.clashIntro));
     for (const [clashAttemptIndex, attempt] of sequence.clash.attempts.entries()) {
       if (!reducedMotion) {
-        steps.push({
-          ...beatStep("clash-first-roll", COMBAT_PLAYBACK_BEATS.clashRoll),
-          clashAttemptIndex,
-        });
+        steps.push(rouletteStep("clash-first-roll", clashAttemptIndex));
       }
       steps.push({
         ...beatStep("clash-first-result", COMBAT_PLAYBACK_BEATS.clashResult),
         clashAttemptIndex,
       });
       if (!reducedMotion) {
-        steps.push({
-          ...beatStep("clash-second-roll", COMBAT_PLAYBACK_BEATS.clashRoll),
-          clashAttemptIndex,
-        });
+        steps.push(rouletteStep("clash-second-roll", clashAttemptIndex));
       }
       steps.push(
         { ...beatStep("clash-second-result", COMBAT_PLAYBACK_BEATS.clashResult), clashAttemptIndex },
@@ -240,7 +245,7 @@ export function getCombatPlaybackSteps(
       steps.push(beatStep("impact", COMBAT_PLAYBACK_BEATS.interaction));
     }
     if (sequence.damages.length > 0 || sequence.heals.length > 0) {
-      steps.push(beatStep("damage", COMBAT_PLAYBACK_BEATS.damage));
+      steps.push(beatStep("damage", COMBAT_PLAYBACK_BEATS.clashDamage));
     }
     if (sequence.deathPlayerIds.length > 0) {
       steps.push(beatStep("death", COMBAT_PLAYBACK_BEATS.death));
@@ -277,7 +282,7 @@ export function getCombatPlaybackSteps(
     steps.push(beatStep("death", COMBAT_PLAYBACK_BEATS.death));
   }
   steps.push(
-    beatStep("summary", COMBAT_PLAYBACK_BEATS.stepSummary),
+    beatStep("summary", COMBAT_PLAYBACK_BEATS.turnSummary),
     beatStep("transition", COMBAT_PLAYBACK_BEATS.transition),
   );
   return steps;
@@ -326,8 +331,8 @@ export function useCombatPlayback(options: {
   const queueRef = useRef<CombatPlaybackBatch[]>([]);
   const currentBatchRef = useRef<CombatPlaybackBatch | null>(null);
   const sequenceIndexRef = useRef(0);
-  const stepIndexRef = useRef(0);
-  const stepsRef = useRef<PlaybackStep[]>([]);
+  const playbackIndexRef = useRef(0);
+  const playbackStepsRef = useRef<PlaybackStep[]>([]);
   const currentSequenceRef = useRef<CombatSequence | null>(null);
   const displayStateRef = useRef<CombatDisplayState>({});
   const displayDeckStateRef = useRef<CombatDeckDisplayState>({});
@@ -355,7 +360,7 @@ export function useCombatPlayback(options: {
   }
 
   function scheduleCurrentStep(): void {
-    const step = stepsRef.current[stepIndexRef.current];
+    const step = playbackStepsRef.current[playbackIndexRef.current];
     if (!step || pausedRef.current) return;
     timerRef.current.schedule(
       () => advanceStepRef.current(),
@@ -365,7 +370,7 @@ export function useCombatPlayback(options: {
 
   enterStepRef.current = () => {
     const sequence = currentSequenceRef.current;
-    const step = stepsRef.current[stepIndexRef.current];
+    const step = playbackStepsRef.current[playbackIndexRef.current];
     if (!sequence || !step) return;
     setCurrentStage(step.stage);
     setCurrentClashAttemptIndex(
@@ -396,8 +401,8 @@ export function useCombatPlayback(options: {
     const batch = currentBatchRef.current;
     const sequence = currentSequenceRef.current;
     if (!batch || !sequence) return;
-    if (stepIndexRef.current + 1 < stepsRef.current.length) {
-      stepIndexRef.current += 1;
+    if (playbackIndexRef.current + 1 < playbackStepsRef.current.length) {
+      playbackIndexRef.current += 1;
       enterStepRef.current();
       return;
     }
@@ -431,8 +436,8 @@ export function useCombatPlayback(options: {
       return;
     }
     currentSequenceRef.current = sequence;
-    stepsRef.current = getCombatPlaybackSteps(sequence, reducedMotionRef.current);
-    stepIndexRef.current = 0;
+    playbackStepsRef.current = getCombatPlaybackSteps(sequence, reducedMotionRef.current);
+    playbackIndexRef.current = 0;
     setCurrentSequence(sequence);
     setStatuses(statusesFor(sequence));
     enterStepRef.current();
@@ -502,7 +507,7 @@ export function useCombatPlayback(options: {
   const setSpeed = useCallback((nextSpeed: CombatPlaybackSpeed) => {
     speedRef.current = nextSpeed;
     setSpeedState(nextSpeed);
-    const step = stepsRef.current[stepIndexRef.current];
+    const step = playbackStepsRef.current[playbackIndexRef.current];
     if (step) {
       setCurrentDurationMs(getPlaybackDuration(
         step.durationMs / PLAYBACK_BEAT_MS,
@@ -557,7 +562,7 @@ export function useCombatPlayback(options: {
     currentBatchRef.current = null;
     currentSequenceRef.current = null;
     sequenceIndexRef.current = 0;
-    stepIndexRef.current = 0;
+    playbackIndexRef.current = 0;
     seenBatchIdsRef.current.clear();
     isPlayingRef.current = false;
     pausedRef.current = false;

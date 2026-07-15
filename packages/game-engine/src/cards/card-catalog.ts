@@ -29,7 +29,7 @@ const cards = [
   {
     id: "BASE_GUARD",
     name: "방어",
-    description: "이 단계에 받는 공격 계열 총 피해를 5 줄입니다.",
+    description: "이번 턴에 받는 공격 계열 총 피해를 5 줄입니다.",
     category: "GUARD",
     classId: "BASE",
     targetType: "NONE",
@@ -111,7 +111,7 @@ const cards = [
   {
     id: "BERSERKER_EXECUTION",
     name: "처형",
-    description: "피해 4 · 단계 시작 체력 10 이하 대상에게 추가 3 피해",
+    description: "피해 4 · 턴 시작 체력 10 이하 대상에게 추가 3 피해",
     category: "ATTACK",
     classId: "BERSERKER",
     targetType: "ENEMY",
@@ -158,7 +158,7 @@ const cards = [
   {
     id: "GUARDIAN_FORTRESS",
     name: "요새",
-    description: "이 단계의 총 공격 피해를 8 줄입니다.",
+    description: "이번 턴의 총 공격 피해를 8 줄입니다.",
     category: "GUARD",
     classId: "GUARDIAN",
     targetType: "NONE",
@@ -167,7 +167,7 @@ const cards = [
   {
     id: "GUARDIAN_LAYERED_GUARD",
     name: "중첩 방어",
-    description: "이 단계의 각 정상 공격 피해를 각각 2 줄입니다.",
+    description: "이번 턴의 각 정상 공격 피해를 각각 2 줄입니다.",
     category: "GUARD",
     classId: "GUARDIAN",
     targetType: "NONE",
@@ -185,7 +185,7 @@ const cards = [
   {
     id: "GUARDIAN_LAST_STAND",
     name: "최후의 버팀",
-    description: "이 단계 피해로 사망할 때 체력 1로 한 번 생존합니다.",
+    description: "이번 턴 피해로 사망할 때 체력 1로 한 번 생존합니다.",
     category: "GUARD",
     classId: "GUARDIAN",
     targetType: "NONE",
@@ -252,7 +252,7 @@ const cards = [
   {
     id: "COMMON_REINFORCED_GUARD",
     name: "강화 방어",
-    description: "이 단계의 총 공격 피해를 6 줄입니다.",
+    description: "이번 턴의 총 공격 피해를 6 줄입니다.",
     category: "GUARD",
     classId: "COMMON",
     targetType: "NONE",

@@ -25,24 +25,6 @@ function emitViews(io: GameServer, roomManager: RoomManager, roomCode: string): 
   }
 }
 
-function emitInitialHands(
-  io: GameServer,
-  roomManager: RoomManager,
-  roomCode: string,
-): void {
-  const room = roomManager.getRoom(roomCode);
-  if (!room) return;
-  for (const player of room.players) {
-    if (!player.connected || !player.socketId) continue;
-    const view = roomManager.getPlayerView(roomCode, player.playerId);
-    if (view.initialHandOptions.length > 0) {
-      io.to(player.socketId).emit("game:initial-hand-options", {
-        cards: view.initialHandOptions,
-      });
-    }
-  }
-}
-
 function emitRewardOptions(
   io: GameServer,
   roomManager: RoomManager,
@@ -114,14 +96,13 @@ export function registerRoomManagerEvents(
         io.to(event.roomCode).emit("game:started", {
           roundNumber: event.roundNumber,
         });
-        emitInitialHands(io, roomManager, event.roomCode);
         break;
-      case "QUEUE_UPDATED": {
+      case "ACTION_UPDATED": {
         const room = roomManager.getRoom(event.roomCode);
         const player = room?.players.find((candidate) => candidate.playerId === event.playerId);
         if (player?.socketId) {
-          io.to(player.socketId).emit("game:queue-updated", {
-            queuedCards: event.queuedCards,
+          io.to(player.socketId).emit("game:action-updated", {
+            selectedAction: event.selectedAction,
           });
         }
         break;

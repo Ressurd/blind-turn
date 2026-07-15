@@ -4,7 +4,7 @@ import {
   type PublicBattleEvent,
 } from "@blind-turn/shared";
 
-export type CombatSequenceType = "ROUND" | "STEP" | "DECK" | "ROUND_SUMMARY" | "GAME_OVER";
+export type CombatSequenceType = "ROUND" | "TURN" | "DECK" | "ROUND_SUMMARY" | "GAME_OVER";
 
 export type CombatOutcome =
   | "STARTED"
@@ -85,7 +85,6 @@ export type CombatSequence = {
   id: string;
   type: CombatSequenceType;
   roundNumber: number;
-  stepIndex: number | null;
   actorId: string | null;
   actorIds: string[];
   targetIds: string[];
@@ -134,14 +133,16 @@ function unique(values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
 }
 
-function buildStepSequence(
+function buildTurnSequence(
   events: PublicBattleEvent[],
   start: number,
   end: number,
 ): CombatSequence {
-  const stepStarted = events.find((event) => event.type === "STEP_STARTED");
-  if (!stepStarted || stepStarted.type !== "STEP_STARTED") {
-    throw new Error("STEP_STARTED event is required");
+  const turnStarted = events.find(
+    (event) => event.type === "TURN_RESOLUTION_STARTED",
+  );
+  if (!turnStarted || turnStarted.type !== "TURN_RESOLUTION_STARTED") {
+    throw new Error("TURN_RESOLUTION_STARTED event is required");
   }
   const cards = events
     .filter((event): event is Extract<PublicBattleEvent, { type: "CARD_REVEALED" }> =>
@@ -174,7 +175,6 @@ function buildStepSequence(
     (event): event is Extract<PublicBattleEvent, { type: "EVADE_ROLLED" }> =>
       event.type === "EVADE_ROLLED",
   );
-  const cancelled = events.filter((event) => event.type === "CARD_CANCELLED");
   const damageEvents = events.filter(
     (event): event is Extract<PublicBattleEvent, { type: "DAMAGE_APPLIED" }> =>
       event.type === "DAMAGE_APPLIED",
@@ -195,7 +195,9 @@ function buildStepSequence(
     (event): event is Extract<PublicBattleEvent, { type: "CARD_DRAWN" }> =>
       event.type === "CARD_DRAWN",
   );
-  const actorIds = unique(cards.map((card) => card.playerId));
+  const actorIds = unique([
+    ...cards.map((card) => card.playerId),
+  ]);
   const targetIds = unique([
     ...cards.map((card) => card.targetPlayerId),
     ...attacks.map((attack) => attack.targetId),
@@ -210,7 +212,6 @@ function buildStepSequence(
   if (clash) actionKinds.add("CLASH");
   if (healEvents.length > 0 || cards.some((card) =>
     getCardDefinition(card.cardId).category === "UTILITY")) actionKinds.add("UTILITY");
-  if (cancelled.length > 0 && actionKinds.size === 0) actionKinds.add("CANCELLED");
 
   let outcome: CombatOutcome = "MIXED";
   if (counter) outcome = "COUNTER";
@@ -268,10 +269,9 @@ function buildStepSequence(
     : [];
 
   return {
-    id: `round-${stepStarted.roundNumber}-step-${stepStarted.stepIndex}`,
-    type: "STEP",
-    roundNumber: stepStarted.roundNumber,
-    stepIndex: stepStarted.stepIndex,
+    id: `turn-${turnStarted.roundNumber}`,
+    type: "TURN",
+    roundNumber: turnStarted.roundNumber,
     actorId: counter?.counterPlayerId
       ?? clash?.winnerId
       ?? attacks[0]?.attackerId
@@ -340,7 +340,6 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
         id: `round-${event.roundNumber}-start`,
         type: "ROUND",
         roundNumber: event.roundNumber,
-        stepIndex: null,
         actorId: null,
         actorIds: [],
         targetIds: [],
@@ -390,7 +389,6 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
         id: `round-${currentRound}-deck-${playerId}-${index}`,
         type: "DECK",
         roundNumber: currentRound,
-        stepIndex: null,
         actorId: playerId,
         actorIds: [playerId],
         targetIds: [],
@@ -420,12 +418,15 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
       index = end + 1;
       continue;
     }
-    if (event.type === "STEP_STARTED") {
+    if (event.type === "TURN_RESOLUTION_STARTED") {
       currentRound = event.roundNumber;
       let end = index;
-      while (end < events.length && events[end]?.type !== "STEP_FINISHED") end += 1;
+      while (
+        end < events.length
+        && events[end]?.type !== "TURN_RESOLUTION_FINISHED"
+      ) end += 1;
       if (end >= events.length) end = events.length - 1;
-      sequences.push(buildStepSequence(events.slice(index, end + 1), index, end));
+      sequences.push(buildTurnSequence(events.slice(index, end + 1), index, end));
       index = end + 1;
       continue;
     }
@@ -434,7 +435,6 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
         id: `round-${currentRound}-game-over`,
         type: "GAME_OVER",
         roundNumber: currentRound,
-        stepIndex: null,
         actorId: event.result.type === "WINNER" ? event.result.winnerPlayerId : null,
         actorIds: [],
         targetIds: [],
@@ -458,7 +458,6 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
         id: `round-${event.roundNumber}-summary`,
         type: "ROUND_SUMMARY",
         roundNumber: event.roundNumber,
-        stepIndex: null,
         actorId: null,
         actorIds: [],
         targetIds: [],
@@ -634,8 +633,8 @@ export function describeCombatSequence(
 ): string {
   const name = (playerId: string | null | undefined) =>
     playerId ? names[playerId] ?? "플레이어" : "플레이어";
-  if (sequence.type === "ROUND") return `${sequence.roundNumber}라운드가 시작되었습니다.`;
-  if (sequence.type === "ROUND_SUMMARY") return `${sequence.roundNumber}라운드 판정이 끝났습니다.`;
+  if (sequence.type === "ROUND") return `${sequence.roundNumber}턴이 시작되었습니다.`;
+  if (sequence.type === "ROUND_SUMMARY") return `${sequence.roundNumber}턴 판정이 끝났습니다.`;
   if (sequence.type === "DECK") {
     const reshuffle = sequence.reshuffles[0];
     const draw = sequence.draws[0];
@@ -672,5 +671,5 @@ export function describeCombatSequence(
     ).join(" ");
   }
   const cardNames = sequence.cards.map((card) => card.cardName).join(", ");
-  return `${sequence.stepIndex! + 1}단계: ${cardNames || "행동 없음"}`;
+  return `이번 턴: ${cardNames || "행동 없음"}`;
 }

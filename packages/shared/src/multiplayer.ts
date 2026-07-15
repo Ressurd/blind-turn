@@ -4,7 +4,7 @@ import type {
   CardDefinition,
   CharacterClassId,
   GameResult,
-  QueuedCardAction,
+  SelectedTurnAction,
 } from "@blind-turn/game-engine";
 import {
   ACTION_TIMEOUT_MS,
@@ -59,9 +59,6 @@ export type RoomErrorCode =
   | "INVALID_GAME_PHASE"
   | "PLAYER_DEAD"
   | "CARD_NOT_IN_HAND"
-  | "CARD_ALREADY_QUEUED"
-  | "MAX_QUEUED_CARDS_EXCEEDED"
-  | "INVALID_QUEUE_ORDER"
   | "INVALID_CARD_TARGET"
   | "INVALID_ADDITIONAL_SELECTION"
   | "ROUND_ALREADY_CONFIRMED"
@@ -70,7 +67,6 @@ export type RoomErrorCode =
   | "INVALID_REWARD_SELECTION"
   | "INVALID_DECK_REMOVAL"
   | "ATTACK_CARD_REQUIRED"
-  | "INITIAL_HAND_SELECTION_REQUIRED"
   | "CHAT_EMPTY"
   | "CHAT_MESSAGE_TOO_LONG"
   | "CHAT_RATE_LIMITED"
@@ -135,7 +131,7 @@ export type PrivateDeckCardSummary = {
   handCount: number;
   drawPileCount: number;
   discardPileCount: number;
-  queuedCount: number;
+  selectedCount: number;
   removedCount: number;
 };
 
@@ -148,6 +144,16 @@ export type DeckRemovalCardView = PrivateCardView & {
 export type RewardSelectionStatus = {
   selectedPlayerCount: number;
   totalPlayerCount: number;
+};
+
+export type RewardCardOption = CardDefinition;
+
+export type RewardSelectionState = {
+  roundNumber: number;
+  options: RewardCardOption[];
+  selectedCardIds: string[];
+  requiredSelectionCount: 2;
+  deadlineAt: number;
 };
 
 export type PlayerGameView = {
@@ -163,15 +169,15 @@ export type PlayerGameView = {
   myPermanentlyRemovedCards: PrivateCardView[];
   myDrawPileSummary: PrivateDeckCardSummary[];
   myDeckSummary: PrivateDeckCardSummary[];
-  myQueuedCards: QueuedCardAction[];
+  mySelectedAction: SelectedTurnAction | null;
   myConfirmed: boolean;
   drawPileCount: number;
   discardPileCount: number;
   totalDeckCount: number;
   permanentlyRemovedCount: number;
   maxDeckSize: number;
-  initialHandOptions: PrivateCardView[];
   rewardOptions: CardDefinition[];
+  rewardSelectionState: RewardSelectionState | null;
   selectedRewards: CardDefinition[];
   rewardSelectionConfirmed: boolean;
   requiredRewardSelectionCount: number;
@@ -261,39 +267,21 @@ export interface ClientToServerEvents {
     payload: { roomCode: string },
     ack: SocketAckCallback<{ started: true }>,
   ) => void;
-  "game:select-initial-hand": (
-    payload: { roomCode: string; selectedInstanceIds: string[] },
-    ack: SocketAckCallback<{ accepted: true }>,
-  ) => void;
-  "game:queue-card": (
+  "game:select-action": (
     payload: {
       roomCode: string;
       roundNumber: number;
       cardInstanceId: string;
-      order?: 0 | 1 | 2;
       targetPlayerId?: string;
-      additionalSelection?: QueuedCardAction["additionalSelection"];
+      additionalSelection?: SelectedTurnAction["additionalSelection"];
     },
     ack: SocketAckCallback<{ accepted: true }>,
   ) => void;
-  "game:move-queued-card": (
-    payload: {
-      roomCode: string;
-      roundNumber: number;
-      cardInstanceId: string;
-      order: 0 | 1 | 2;
-    },
+  "game:clear-action": (
+    payload: { roomCode: string; roundNumber: number },
     ack: SocketAckCallback<{ accepted: true }>,
   ) => void;
-  "game:remove-queued-card": (
-    payload: { roomCode: string; roundNumber: number; cardInstanceId: string },
-    ack: SocketAckCallback<{ accepted: true }>,
-  ) => void;
-  "game:reorder-queued-cards": (
-    payload: { roomCode: string; roundNumber: number; orderedInstanceIds: string[] },
-    ack: SocketAckCallback<{ accepted: true }>,
-  ) => void;
-  "game:confirm-round": (
+  "game:confirm-action": (
     payload: { roomCode: string; roundNumber: number },
     ack: SocketAckCallback<{ accepted: true }>,
   ) => void;
@@ -339,8 +327,7 @@ export interface ServerToClientEvents {
   "room:player-disconnected": (payload: { playerId: string }) => void;
   "room:player-reconnected": (payload: { playerId: string }) => void;
   "game:started": (payload: { roundNumber: number }) => void;
-  "game:initial-hand-options": (payload: { cards: PrivateCardView[] }) => void;
-  "game:queue-updated": (payload: { queuedCards: QueuedCardAction[] }) => void;
+  "game:action-updated": (payload: { selectedAction: SelectedTurnAction | null }) => void;
   "game:round-submission-status": (payload: RoundSubmissionStatusPayload) => void;
   "game:round-locked": (payload: { roundNumber: number }) => void;
   "game:card-counts-revealed": (payload: CardCountsRevealedPayload) => void;

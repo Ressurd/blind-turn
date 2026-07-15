@@ -4,7 +4,6 @@ import {
   cloneDeckState,
   createInitialDeckState,
   drawCards,
-  selectInitialTacticianHand,
 } from "../deck/deck-state";
 import { ProductionRandomSource, type RandomSource } from "../random";
 import type {
@@ -91,7 +90,6 @@ export function createGame(
       alive: true,
       deckState: createInitialDeckState(
         input.id,
-        input.characterId,
         randomSource,
       ),
     };
@@ -105,43 +103,12 @@ export function createGame(
   } satisfies GameState;
 }
 
-export function hasPendingInitialHandSelection(state: GameState): boolean {
-  return state.players.some(
-    (player) => player.deckState.pendingInitialHandSelection.length > 0,
-  );
-}
-
-export function chooseInitialHand(
-  state: GameState,
-  playerId: string,
-  selectedInstanceIds: readonly string[],
-  randomSource: RandomSource,
-): GameState {
-  if (state.phase !== "ROUND_STARTING" || state.roundNumber !== 0) {
-    throw new Error("INVALID_GAME_PHASE");
-  }
-  const next = cloneGameState(state);
-  const player = next.players.find((candidate) => candidate.id === playerId);
-  if (!player || player.characterId !== "TACTICIAN") {
-    throw new Error("INITIAL_HAND_SELECTION_REQUIRED");
-  }
-  player.deckState = selectInitialTacticianHand(
-    player.deckState,
-    selectedInstanceIds,
-    randomSource,
-  );
-  return next;
-}
-
 export function startRound(
   state: GameState,
   randomSource: RandomSource,
 ): GameState {
   if (state.phase !== "ROUND_STARTING") {
     throw new Error("INVALID_GAME_PHASE");
-  }
-  if (hasPendingInitialHandSelection(state)) {
-    throw new Error("INITIAL_HAND_SELECTION_REQUIRED");
   }
   const next = cloneGameState(state);
   next.roundNumber += 1;
@@ -150,7 +117,7 @@ export function startRound(
   next.players = next.players.map((player) => {
     if (!player.alive) return player;
     const deckState = cloneDeckState(player.deckState);
-    deckState.queuedCards = [];
+    deckState.selectedAction = null;
     deckState.confirmed = false;
     if (next.roundNumber === 1) return { ...player, deckState };
     const drawn = drawCards(deckState, 1, randomSource);

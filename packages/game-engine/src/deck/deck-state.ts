@@ -1,15 +1,10 @@
 import {
   INITIAL_HAND_SIZE,
   MAX_HAND_SIZE,
-  TACTICIAN_INITIAL_DRAW_SIZE,
 } from "../constants";
 import { BASE_DECK_CARD_IDS } from "../cards/card-catalog";
 import type { RandomSource } from "../random";
-import type {
-  ActionCardInstance,
-  CharacterClassId,
-  PlayerDeckState,
-} from "../types";
+import type { ActionCardInstance, PlayerDeckState } from "../types";
 
 export function cloneCardInstance(
   card: ActionCardInstance,
@@ -24,12 +19,14 @@ export function cloneDeckState(state: PlayerDeckState): PlayerDeckState {
     discardPile: state.discardPile.map(cloneCardInstance),
     permanentlyRemovedCards:
       state.permanentlyRemovedCards.map(cloneCardInstance),
-    queuedCards: state.queuedCards.map((queued) => ({
-      ...queued,
-      additionalSelection: queued.additionalSelection
-        ? JSON.parse(JSON.stringify(queued.additionalSelection)) as typeof queued.additionalSelection
+    selectedAction: state.selectedAction
+      ? {
+        ...state.selectedAction,
+        additionalSelection: state.selectedAction.additionalSelection
+        ? JSON.parse(JSON.stringify(state.selectedAction.additionalSelection)) as typeof state.selectedAction.additionalSelection
         : null,
-    })),
+      }
+      : null,
     confirmed: state.confirmed,
     pendingRewardOptions: [...state.pendingRewardOptions],
     selectedRewardCardIds: [...state.selectedRewardCardIds],
@@ -38,8 +35,6 @@ export function cloneDeckState(state: PlayerDeckState): PlayerDeckState {
     selectedRemovalInstanceIds: [...state.selectedRemovalInstanceIds],
     newlyAddedCardInstanceIds: [...state.newlyAddedCardInstanceIds],
     deckRemovalConfirmed: state.deckRemovalConfirmed,
-    pendingInitialHandSelection:
-      state.pendingInitialHandSelection.map(cloneCardInstance),
     nextInstanceNumber: state.nextInstanceNumber,
   };
 }
@@ -101,7 +96,6 @@ export function drawCards(
 
 export function createInitialDeckState(
   playerId: string,
-  characterId: CharacterClassId,
   randomSource: RandomSource,
 ): PlayerDeckState {
   const deck = BASE_DECK_CARD_IDS.map((cardId, index) =>
@@ -112,7 +106,7 @@ export function createInitialDeckState(
     hand: [],
     discardPile: [],
     permanentlyRemovedCards: [],
-    queuedCards: [],
+    selectedAction: null,
     confirmed: false,
     pendingRewardOptions: [],
     selectedRewardCardIds: [],
@@ -121,47 +115,9 @@ export function createInitialDeckState(
     selectedRemovalInstanceIds: [],
     newlyAddedCardInstanceIds: [],
     deckRemovalConfirmed: false,
-    pendingInitialHandSelection: [],
     nextInstanceNumber: deck.length + 1,
   };
-  if (characterId === "TACTICIAN") {
-    const offered = state.drawPile.splice(0, TACTICIAN_INITIAL_DRAW_SIZE);
-    state.hand.push(...offered);
-    state.pendingInitialHandSelection = state.hand.map(cloneCardInstance);
-    return state;
-  }
   return drawCards(state, INITIAL_HAND_SIZE, randomSource).state;
-}
-
-export function selectInitialTacticianHand(
-  state: PlayerDeckState,
-  selectedInstanceIds: readonly string[],
-  randomSource: RandomSource,
-): PlayerDeckState {
-  if (state.pendingInitialHandSelection.length !== TACTICIAN_INITIAL_DRAW_SIZE) {
-    throw new Error("INITIAL_HAND_SELECTION_REQUIRED");
-  }
-  const uniqueIds = new Set(selectedInstanceIds);
-  if (uniqueIds.size !== INITIAL_HAND_SIZE) {
-    throw new Error("INITIAL_HAND_SELECTION_REQUIRED");
-  }
-  const offeredIds = new Set(
-    state.pendingInitialHandSelection.map((card) => card.instanceId),
-  );
-  if ([...uniqueIds].some((instanceId) => !offeredIds.has(instanceId))) {
-    throw new Error("INITIAL_HAND_SELECTION_REQUIRED");
-  }
-  const next = cloneDeckState(state);
-  const returned = next.hand.filter(
-    (card) => !uniqueIds.has(card.instanceId),
-  );
-  next.hand = next.hand.filter((card) => uniqueIds.has(card.instanceId));
-  for (const card of returned) {
-    const position = randomSource.nextInt(0, next.drawPile.length, "INSERT");
-    next.drawPile.splice(position, 0, card);
-  }
-  next.pendingInitialHandSelection = [];
-  return next;
 }
 
 export function insertNewCards(

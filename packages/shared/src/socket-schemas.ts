@@ -31,11 +31,6 @@ export const SetReadyPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
   ready: z.boolean(),
 });
-export const InitialHandSelectionPayloadSchema = z.object({
-  roomCode: RoomCodeSchema,
-  selectedInstanceIds: z.array(z.string().min(1)).length(5),
-});
-
 const AdditionalSelectionSchema = z.union([
   z.object({ discardCardInstanceId: z.string().min(1) }),
   z.object({ handCardInstanceIds: z.array(z.string().min(1)).max(2) }),
@@ -43,31 +38,18 @@ const AdditionalSelectionSchema = z.union([
   z.null(),
 ]);
 
-export const QueueCardPayloadSchema = z.object({
+export const SelectActionPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
   roundNumber: z.number().int().positive(),
   cardInstanceId: z.string().min(1),
-  order: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
   targetPlayerId: z.string().min(1).optional(),
   additionalSelection: AdditionalSelectionSchema.optional(),
 });
-export const MoveQueuedCardPayloadSchema = z.object({
+export const ClearActionPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
   roundNumber: z.number().int().positive(),
-  cardInstanceId: z.string().min(1),
-  order: z.union([z.literal(0), z.literal(1), z.literal(2)]),
 });
-export const RemoveQueuedCardPayloadSchema = z.object({
-  roomCode: RoomCodeSchema,
-  roundNumber: z.number().int().positive(),
-  cardInstanceId: z.string().min(1),
-});
-export const ReorderQueuedCardsPayloadSchema = z.object({
-  roomCode: RoomCodeSchema,
-  roundNumber: z.number().int().positive(),
-  orderedInstanceIds: z.array(z.string().min(1)).max(3),
-});
-export const ConfirmRoundPayloadSchema = z.object({
+export const ConfirmActionPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
   roundNumber: z.number().int().positive(),
 });

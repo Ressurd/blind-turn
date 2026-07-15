@@ -37,24 +37,24 @@ function viewFixture(): PlayerGameView {
     ],
     myDiscardPile: [],
     myPermanentlyRemovedCards: [],
-    myDrawPileSummary: [{ cardId: quick.id, definition: quick, totalCount: 2, handCount: 0, drawPileCount: 1, discardPileCount: 0, queuedCount: 1, removedCount: 0 }],
+    myDrawPileSummary: [{ cardId: quick.id, definition: quick, totalCount: 2, handCount: 0, drawPileCount: 1, discardPileCount: 0, selectedCount: 1, removedCount: 0 }],
     myDeckSummary: [
-      { cardId: quick.id, definition: quick, totalCount: 2, handCount: 0, drawPileCount: 1, discardPileCount: 0, queuedCount: 1, removedCount: 0 },
-      { cardId: guard.id, definition: guard, totalCount: 2, handCount: 1, drawPileCount: 0, discardPileCount: 1, queuedCount: 0, removedCount: 0 },
+      { cardId: quick.id, definition: quick, totalCount: 2, handCount: 0, drawPileCount: 1, discardPileCount: 0, selectedCount: 1, removedCount: 0 },
+      { cardId: guard.id, definition: guard, totalCount: 2, handCount: 1, drawPileCount: 0, discardPileCount: 1, selectedCount: 0, removedCount: 0 },
     ],
-    myQueuedCards: [{ cardInstanceId: "quick-1", order: 0, targetPlayerId: "p2", additionalSelection: null }],
+    mySelectedAction: { cardInstanceId: "quick-1", targetPlayerId: "p2", additionalSelection: null },
     myConfirmed: false,
     drawPileCount: 4,
     discardPileCount: 2,
     totalDeckCount: 10,
     permanentlyRemovedCount: 0,
     maxDeckSize: 15,
-    initialHandOptions: [],
     rewardOptions: [
       getCardDefinition("DUELIST_BLADE"),
       getCardDefinition("DUELIST_FLASH_THRUST"),
       getCardDefinition("COMMON_FIRST_AID"),
     ],
+    rewardSelectionState: null,
     selectedRewards: [getCardDefinition("DUELIST_BLADE"), getCardDefinition("COMMON_FIRST_AID")],
     rewardSelectionConfirmed: false,
     requiredRewardSelectionCount: 2,
@@ -87,14 +87,36 @@ describe("reward and deck UX", () => {
       }),
     );
     expect(html.match(/rewardChoiceCard/g)).toHaveLength(3);
-    expect(html).toContain("카드 2장을 선택하세요");
+    expect(html).toContain("카드 3장 중 2장을 선택하세요");
     expect(html).toContain("선택한 카드 2장 확정");
     expect(html).toContain("현재 덱 보기");
     expect(selectCard).not.toHaveBeenCalled();
     expect(confirm).not.toHaveBeenCalled();
   });
 
-  it("renders draw aggregates without instance ids and includes queued cards in full-deck locations", () => {
+  it("renders four Tactician choices while still requiring exactly two", () => {
+    const view = viewFixture();
+    view.myCharacterId = "TACTICIAN";
+    view.rewardOptions = [
+      getCardDefinition("TACTICIAN_RECYCLE"),
+      getCardDefinition("TACTICIAN_SWAP"),
+      getCardDefinition("TACTICIAN_SIFT"),
+      getCardDefinition("COMMON_FIRST_AID"),
+    ];
+    view.selectedRewards = [];
+    const html = renderToStaticMarkup(createElement(RewardSelectionModal, {
+      view,
+      onToggleCard: vi.fn(),
+      onConfirm: vi.fn(),
+      onOpenDeck: vi.fn(),
+    }));
+    expect(html.match(/rewardChoiceCard/g)).toHaveLength(4);
+    expect(html).toContain("전술가의 선택");
+    expect(html).toContain("카드 4장 중 2장을 선택하세요");
+    expect(html).toContain("현재 선택 0 / 2");
+  });
+
+  it("renders draw aggregates without instance ids and includes the selected card location", () => {
     const view = viewFixture();
     const drawHtml = renderToStaticMarkup(
       createElement(DeckInspector, {
@@ -114,7 +136,7 @@ describe("reward and deck UX", () => {
         onRequestClose: vi.fn(),
       }),
     );
-    expect(allHtml).toContain("예약");
+    expect(allHtml).toContain("선택");
     expect(allHtml).toContain("전체 덱");
   });
 
@@ -147,10 +169,9 @@ describe("reward and deck UX", () => {
       hostPlayerId: view.hostPlayerId,
       displayState: Object.fromEntries(view.players.map((player) => [player.playerId, player])),
       sequence: {
-        id: "step",
-        type: "STEP",
+        id: "turn",
+        type: "TURN",
         roundNumber: 1,
-        stepIndex: 0,
         actorId: "p1",
         actorIds: ["p1", "p2"],
         targetIds: ["p2"],
@@ -175,22 +196,22 @@ describe("reward and deck UX", () => {
       onTogglePause: vi.fn(), onSpeedChange: vi.fn(), onSkip: vi.fn(),
     }));
     expect(html).toContain("--playback-stage-duration:600ms");
-    expect(html).toContain("--playback-beat-duration:600ms");
+    expect(html).toContain("--playback-beat-duration:750ms");
     expect(html).not.toContain("animation-delay");
   });
 
   it("shows clash rolls sequentially and separates roll, bonuses, and final value", () => {
     const view = viewFixture();
     const sequence = buildCombatSequences([
-      { type: "STEP_STARTED", roundNumber: 1, stepIndex: 0 },
-      { type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "p1", cardInstanceId: "q", cardId: "BASE_QUICK_STRIKE", targetPlayerId: "p2" },
-      { type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "p2", cardInstanceId: "h", cardId: "BASE_HEAVY_STRIKE", targetPlayerId: "p1" },
-      { type: "CLASH_STARTED", stepIndex: 0, playerIds: ["p1", "p2"], cardIds: ["BASE_QUICK_STRIKE", "BASE_HEAVY_STRIKE"] },
-      { type: "CLASH_ROLLED", stepIndex: 0, playerId: "p1", roll: 5, bonus: 3, total: 8 },
-      { type: "CLASH_ROLLED", stepIndex: 0, playerId: "p2", roll: 6, bonus: 0, total: 6 },
-      { type: "CLASH_RESOLVED", stepIndex: 0, winnerId: "p1", loserId: "p2" },
-      { type: "DAMAGE_APPLIED", stepIndex: 0, playerId: "p2", damage: 3 * HP_SCALE, remainingHp: 27 * HP_SCALE, source: "ATTACK" },
-      { type: "STEP_FINISHED", roundNumber: 1, stepIndex: 0 },
+      { type: "TURN_RESOLUTION_STARTED", roundNumber: 1 },
+      { type: "CARD_REVEALED", roundNumber: 1, playerId: "p1", cardInstanceId: "q", cardId: "BASE_QUICK_STRIKE", targetPlayerId: "p2" },
+      { type: "CARD_REVEALED", roundNumber: 1, playerId: "p2", cardInstanceId: "h", cardId: "BASE_HEAVY_STRIKE", targetPlayerId: "p1" },
+      { type: "CLASH_STARTED", playerIds: ["p1", "p2"], cardIds: ["BASE_QUICK_STRIKE", "BASE_HEAVY_STRIKE"] },
+      { type: "CLASH_ROLLED", playerId: "p1", roll: 5, bonus: 3, total: 8 },
+      { type: "CLASH_ROLLED", playerId: "p2", roll: 6, bonus: 0, total: 6 },
+      { type: "CLASH_RESOLVED", winnerId: "p1", loserId: "p2" },
+      { type: "DAMAGE_APPLIED", playerId: "p2", damage: 3 * HP_SCALE, remainingHp: 27 * HP_SCALE, source: "ATTACK" },
+      { type: "TURN_RESOLUTION_FINISHED", roundNumber: 1 },
     ])[0]!;
     const baseProps = {
       players: view.players,
@@ -223,34 +244,47 @@ describe("reward and deck UX", () => {
     expect(modifiers).toContain("+2");
     expect(modifiers).toContain("+1");
     expect(modifiers).toContain("최종");
+
+    const damage = renderToStaticMarkup(createElement(CombatStage, {
+      ...baseProps,
+      stage: "damage",
+      durationMs: 1_500,
+    }));
+    expect(damage).toContain("clashDisplay");
+    expect(damage).toContain("합 승리");
+    expect(damage).toContain("합 패배");
+    expect(damage).not.toContain("다음 행동");
   });
 });
 
 describe("target-centered action reservation", () => {
-  it("filters self and enemy actions, excludes reservations, and blocks dead targets", () => {
+  it("filters self and enemy actions, permits changing the selection, and blocks dead targets", () => {
     const view = viewFixture();
     view.phase = "SELECTING_CARDS";
-    view.myQueuedCards = [];
+    view.mySelectedAction = null;
     const enemyCards = getTargetActionCandidates(view, "p2");
     const selfCards = getTargetActionCandidates(view, "p1");
     expect(enemyCards.map((card) => card.cardId)).toEqual(["BASE_QUICK_STRIKE"]);
     expect(selfCards.map((card) => card.cardId)).toEqual(["BASE_GUARD"]);
 
-    view.myQueuedCards = [{ cardInstanceId: "quick-1", order: 0, targetPlayerId: "p2", additionalSelection: null }];
-    expect(getTargetActionCandidates(view, "p2")).toEqual([]);
-    expect(getReservationLabels(view).p2).toEqual(["1단계 · 속공"]);
+    view.mySelectedAction = { cardInstanceId: "quick-1", targetPlayerId: "p2", additionalSelection: null };
+    expect(getTargetActionCandidates(view, "p2").map((card) => card.cardId)).toEqual(["BASE_QUICK_STRIKE"]);
+    expect(getReservationLabels(view).p2).toEqual(["선택 · 속공"]);
 
     view.players[1]!.alive = false;
     expect(getTargetActionCandidates(view, "p2")).toEqual([]);
   });
 
-  it("does not render or request a stage picker during card setup", () => {
+  it("uses one selected action with PASS and no queue editor", () => {
     const source = readFileSync(
       new URL("../src/features/multiplayer/MultiplayerGame.tsx", import.meta.url),
       "utf8",
     );
     expect(source).not.toContain("stagePicker");
-    expect(source).not.toContain("예약할 단계");
-    expect(source).toContain("번째 행동에 자동으로 예약됩니다.");
+    expect(source).not.toContain("showQueueEditor");
+    expect(source).not.toContain("myQueuedCards");
+    expect(source).toContain("이번 턴에 사용할 한 장으로 선택합니다.");
+    expect(source).toContain("game:select-action");
+    expect(source).toContain("패스");
   });
 });

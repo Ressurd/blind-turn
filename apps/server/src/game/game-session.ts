@@ -2,27 +2,23 @@ import {
   GameEngineError,
   ProductionRandomSource,
   chooseAutomaticDeckRemovals,
-  chooseInitialHand,
+  clearAction,
   cloneGameState,
+  confirmAction,
   confirmDeckRemoval as confirmEngineDeckRemoval,
   confirmMissingPlayers,
   confirmRewardSelection,
-  confirmRound,
   createGame,
   haveAllAlivePlayersConfirmed,
-  hasPendingInitialHandSelection,
-  moveQueuedCard,
-  queueCard,
-  removeQueuedCard,
-  reorderQueuedCards,
   resolveRound,
+  selectAction,
   selectRandomPendingRewards,
   startRound,
   updateDeckRemovalSelection,
   updateRewardSelection,
   type CreatePlayerInput,
   type GameState,
-  type QueuedCardAction,
+  type SelectedTurnAction,
   type RandomSource,
   type RoundResolvedPayload,
 } from "@blind-turn/shared";
@@ -34,10 +30,7 @@ export type RandomSourceFactory = () => RandomSource;
 function asRoomError(error: unknown): never {
   if (error instanceof GameEngineError) throw new RoomError(error.code);
   if (error instanceof Error) {
-    const known = [
-      "INVALID_GAME_PHASE",
-      "INITIAL_HAND_SELECTION_REQUIRED",
-    ] as const;
+    const known = ["INVALID_GAME_PHASE"] as const;
     const code = known.find((candidate) => error.message.includes(candidate));
     if (code) throw new RoomError(code);
   }
@@ -58,9 +51,7 @@ export class GameSession {
 
   start(players: CreatePlayerInput[]): GameState {
     this.state = createGame(players, this.randomSourceFactory());
-    if (!hasPendingInitialHandSelection(this.state)) {
-      this.state = startRound(this.state, this.randomSourceFactory());
-    }
+    this.state = startRound(this.state, this.randomSourceFactory());
     this.eventsFinishedPlayerIds.clear();
     this.lastResolvedRound = 0;
     this.lastResolvedPayload = null;
@@ -82,78 +73,24 @@ export class GameSession {
       : null;
   }
 
-  selectInitialHand(playerId: string, selectedInstanceIds: string[]): void {
-    try {
-      this.state = chooseInitialHand(
-        this.getState(),
-        playerId,
-        selectedInstanceIds,
-        this.randomSourceFactory(),
-      );
-      if (!hasPendingInitialHandSelection(this.state)) {
-        this.state = startRound(this.state, this.randomSourceFactory());
-      }
-    } catch (error) {
-      asRoomError(error);
-    }
-  }
-
-  queue(
+  select(
     playerId: string,
     roundNumber: number,
-    input: Omit<QueuedCardAction, "order"> & { order?: 0 | 1 | 2 },
+    input: SelectedTurnAction,
   ): void {
     try {
-      this.state = queueCard(this.getState(), playerId, roundNumber, input);
+      this.state = selectAction(this.getState(), playerId, roundNumber, input);
     } catch (error) {
       asRoomError(error);
     }
   }
 
-  moveQueued(
+  clear(
     playerId: string,
     roundNumber: number,
-    instanceId: string,
-    order: 0 | 1 | 2,
   ): void {
     try {
-      this.state = moveQueuedCard(
-        this.getState(),
-        playerId,
-        roundNumber,
-        instanceId,
-        order,
-      );
-    } catch (error) {
-      asRoomError(error);
-    }
-  }
-
-  removeQueued(playerId: string, roundNumber: number, instanceId: string): void {
-    try {
-      this.state = removeQueuedCard(
-        this.getState(),
-        playerId,
-        roundNumber,
-        instanceId,
-      );
-    } catch (error) {
-      asRoomError(error);
-    }
-  }
-
-  reorderQueued(
-    playerId: string,
-    roundNumber: number,
-    instanceIds: string[],
-  ): void {
-    try {
-      this.state = reorderQueuedCards(
-        this.getState(),
-        playerId,
-        roundNumber,
-        instanceIds,
-      );
+      this.state = clearAction(this.getState(), playerId, roundNumber);
     } catch (error) {
       asRoomError(error);
     }
@@ -161,7 +98,7 @@ export class GameSession {
 
   confirm(playerId: string, roundNumber: number): void {
     try {
-      this.state = confirmRound(this.getState(), playerId, roundNumber);
+      this.state = confirmAction(this.getState(), playerId, roundNumber);
     } catch (error) {
       asRoomError(error);
     }

@@ -1,12 +1,11 @@
-import { MAX_CARDS_PER_ROUND } from "../constants";
 import { getCardDefinition } from "../cards/card-catalog";
 import { cloneGameState } from "../state/game-state";
 import type {
   GameErrorCode,
   GameState,
   PlayerState,
-  QueuedCardAction,
-  QueuedCardAdditionalSelection,
+  SelectedActionAdditionalSelection,
+  SelectedTurnAction,
 } from "../types";
 
 export class GameEngineError extends Error {
@@ -14,17 +13,6 @@ export class GameEngineError extends Error {
     super(code);
     this.name = "GameEngineError";
   }
-}
-
-function reindexQueuedCards(player: PlayerState): void {
-  player.deckState.queuedCards.forEach((queued, order) => {
-    queued.order = order as 0 | 1 | 2;
-  });
-}
-
-function compactQueuedCards(player: PlayerState): void {
-  player.deckState.queuedCards.sort((left, right) => left.order - right.order);
-  reindexQueuedCards(player);
 }
 
 function requireSelectingPlayer(
@@ -70,11 +58,9 @@ function validateTarget(
 function validateAdditionalSelection(
   player: PlayerState,
   cardId: string,
-  additionalSelection: QueuedCardAdditionalSelection | undefined,
+  selectedCardInstanceId: string,
+  additionalSelection: SelectedActionAdditionalSelection | undefined,
 ): void {
-  const queuedIds = new Set(
-    player.deckState.queuedCards.map((queued) => queued.cardInstanceId),
-  );
   if (cardId === "TACTICIAN_RECYCLE") {
     if (
       !additionalSelection
@@ -96,7 +82,7 @@ function validateAdditionalSelection(
         !== additionalSelection.handCardInstanceIds.length
       || additionalSelection.handCardInstanceIds.some(
         (instanceId) =>
-          queuedIds.has(instanceId)
+          instanceId === selectedCardInstanceId
           || !player.deckState.hand.some((card) => card.instanceId === instanceId),
       )
     ) {
@@ -108,7 +94,7 @@ function validateAdditionalSelection(
     if (
       !additionalSelection
       || !("returnCardInstanceId" in additionalSelection)
-      || queuedIds.has(additionalSelection.returnCardInstanceId)
+      || additionalSelection.returnCardInstanceId === selectedCardInstanceId
       || !player.deckState.hand.some(
         (card) => card.instanceId === additionalSelection.returnCardInstanceId,
       )
@@ -122,130 +108,52 @@ function validateAdditionalSelection(
   }
 }
 
-export function queueCard(
+export function selectAction(
   state: GameState,
   playerId: string,
   roundNumber: number,
-  input: Omit<QueuedCardAction, "order"> & { order?: 0 | 1 | 2 },
+  input: SelectedTurnAction,
 ): GameState {
   const next = cloneGameState(state);
   const player = requireSelectingPlayer(next, playerId, roundNumber);
-  compactQueuedCards(player);
-  if (player.deckState.queuedCards.length >= MAX_CARDS_PER_ROUND) {
-    throw new GameEngineError("MAX_QUEUED_CARDS_EXCEEDED");
-  }
-  if (
-    player.deckState.queuedCards.some(
-      (queued) => queued.cardInstanceId === input.cardInstanceId,
-    )
-  ) {
-    throw new GameEngineError("CARD_ALREADY_QUEUED");
-  }
   const card = player.deckState.hand.find(
     (candidate) => candidate.instanceId === input.cardInstanceId,
   );
   if (!card) throw new GameEngineError("CARD_NOT_IN_HAND");
-  const reservedIds = new Set(
-    player.deckState.queuedCards.flatMap((queued) => {
-      const selection = queued.additionalSelection;
-      if (!selection) return [];
-      if ("handCardInstanceIds" in selection) return selection.handCardInstanceIds;
-      if ("returnCardInstanceId" in selection) return [selection.returnCardInstanceId];
-      return [];
-    }),
-  );
-  if (reservedIds.has(input.cardInstanceId)) {
-    throw new GameEngineError("INVALID_ADDITIONAL_SELECTION");
-  }
   const definition = getCardDefinition(card.cardId);
   validateTarget(next, player, definition.targetType, input.targetPlayerId);
-  validateAdditionalSelection(player, card.cardId, input.additionalSelection);
-  const order = player.deckState.queuedCards.length as 0 | 1 | 2;
-  player.deckState.queuedCards.push({
+  validateAdditionalSelection(
+    player,
+    card.cardId,
+    input.cardInstanceId,
+    input.additionalSelection,
+  );
+  player.deckState.selectedAction = {
     cardInstanceId: input.cardInstanceId,
-    order,
     ...(input.targetPlayerId ? { targetPlayerId: input.targetPlayerId } : {}),
     additionalSelection: input.additionalSelection ?? null,
-  });
-  player.deckState.queuedCards.sort((left, right) => left.order - right.order);
+  };
   return next;
 }
 
-export function removeQueuedCard(
-  state: GameState,
-  playerId: string,
-  roundNumber: number,
-  cardInstanceId: string,
-): GameState {
-  const next = cloneGameState(state);
-  const player = requireSelectingPlayer(next, playerId, roundNumber);
-  const index = player.deckState.queuedCards.findIndex(
-    (queued) => queued.cardInstanceId === cardInstanceId,
-  );
-  if (index < 0) throw new GameEngineError("CARD_NOT_IN_HAND");
-  player.deckState.queuedCards.splice(index, 1);
-  compactQueuedCards(player);
-  return next;
-}
-
-export function moveQueuedCard(
-  state: GameState,
-  playerId: string,
-  roundNumber: number,
-  cardInstanceId: string,
-  order: 0 | 1 | 2,
-): GameState {
-  const next = cloneGameState(state);
-  const player = requireSelectingPlayer(next, playerId, roundNumber);
-  compactQueuedCards(player);
-  const movingIndex = player.deckState.queuedCards.findIndex(
-    (queued) => queued.cardInstanceId === cardInstanceId,
-  );
-  if (movingIndex < 0) throw new GameEngineError("CARD_NOT_IN_HAND");
-  if (order >= player.deckState.queuedCards.length) {
-    throw new GameEngineError("INVALID_QUEUE_ORDER");
-  }
-  const [moving] = player.deckState.queuedCards.splice(movingIndex, 1);
-  player.deckState.queuedCards.splice(order, 0, moving!);
-  reindexQueuedCards(player);
-  return next;
-}
-
-export function reorderQueuedCards(
-  state: GameState,
-  playerId: string,
-  roundNumber: number,
-  orderedInstanceIds: readonly string[],
-): GameState {
-  const next = cloneGameState(state);
-  const player = requireSelectingPlayer(next, playerId, roundNumber);
-  const currentIds = player.deckState.queuedCards.map(
-    (queued) => queued.cardInstanceId,
-  );
-  if (
-    orderedInstanceIds.length !== currentIds.length
-    || new Set(orderedInstanceIds).size !== orderedInstanceIds.length
-    || orderedInstanceIds.some((instanceId) => !currentIds.includes(instanceId))
-  ) {
-    throw new GameEngineError("INVALID_QUEUE_ORDER");
-  }
-  player.deckState.queuedCards = orderedInstanceIds.map((instanceId, order) => ({
-    ...player.deckState.queuedCards.find(
-      (queued) => queued.cardInstanceId === instanceId,
-    )!,
-    order: order as 0 | 1 | 2,
-  }));
-  return next;
-}
-
-export function confirmRound(
+export function clearAction(
   state: GameState,
   playerId: string,
   roundNumber: number,
 ): GameState {
   const next = cloneGameState(state);
   const player = requireSelectingPlayer(next, playerId, roundNumber);
-  compactQueuedCards(player);
+  player.deckState.selectedAction = null;
+  return next;
+}
+
+export function confirmAction(
+  state: GameState,
+  playerId: string,
+  roundNumber: number,
+): GameState {
+  const next = cloneGameState(state);
+  const player = requireSelectingPlayer(next, playerId, roundNumber);
   player.deckState.confirmed = true;
   return next;
 }
@@ -257,7 +165,7 @@ export function confirmMissingPlayers(state: GameState): GameState {
   const next = cloneGameState(state);
   for (const player of next.players.filter((candidate) => candidate.alive)) {
     if (player.deckState.confirmed) continue;
-    player.deckState.queuedCards = [];
+    player.deckState.selectedAction = null;
     player.deckState.confirmed = true;
   }
   return next;

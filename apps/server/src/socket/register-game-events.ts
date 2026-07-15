@@ -1,11 +1,8 @@
 import {
-  ConfirmRoundPayloadSchema,
+  ClearActionPayloadSchema,
+  ConfirmActionPayloadSchema,
   EventsFinishedPayloadSchema,
-  InitialHandSelectionPayloadSchema,
-  MoveQueuedCardPayloadSchema,
-  QueueCardPayloadSchema,
-  RemoveQueuedCardPayloadSchema,
-  ReorderQueuedCardsPayloadSchema,
+  SelectActionPayloadSchema,
   RoomCodePayloadSchema,
   UpdateDeckRemovalPayloadSchema,
   UpdateRewardSelectionPayloadSchema,
@@ -20,27 +17,12 @@ export function registerGameEvents(
   roomManager: RoomManager,
   logger: AppLogger,
 ): void {
-  socket.on("game:select-initial-hand", (payload, ack) => {
+  socket.on("game:select-action", (payload, ack) => {
     runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(InitialHandSelectionPayloadSchema, payload);
+      const parsed = parsePayload(SelectActionPayloadSchema, payload);
       const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.selectInitialHand(
-        parsed.roomCode,
-        session.playerId,
-        socket.id,
-        parsed.selectedInstanceIds,
-      );
-      return { accepted: true as const };
-    }, logger);
-  });
-
-  socket.on("game:queue-card", (payload, ack) => {
-    runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(QueueCardPayloadSchema, payload);
-      const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.queueCard(parsed.roomCode, session.playerId, socket.id, parsed.roundNumber, {
+      roomManager.selectAction(parsed.roomCode, session.playerId, socket.id, parsed.roundNumber, {
         cardInstanceId: parsed.cardInstanceId,
-        ...(parsed.order === undefined ? {} : { order: parsed.order }),
         ...(parsed.targetPlayerId ? { targetPlayerId: parsed.targetPlayerId } : {}),
         additionalSelection: parsed.additionalSelection ?? null,
       });
@@ -48,57 +30,25 @@ export function registerGameEvents(
     }, logger);
   });
 
-  socket.on("game:move-queued-card", (payload, ack) => {
+  socket.on("game:clear-action", (payload, ack) => {
     runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(MoveQueuedCardPayloadSchema, payload);
+      const parsed = parsePayload(ClearActionPayloadSchema, payload);
       const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.moveQueuedCard(
+      roomManager.clearAction(
         parsed.roomCode,
         session.playerId,
         socket.id,
         parsed.roundNumber,
-        parsed.cardInstanceId,
-        parsed.order,
       );
       return { accepted: true as const };
     }, logger);
   });
 
-  socket.on("game:remove-queued-card", (payload, ack) => {
+  socket.on("game:confirm-action", (payload, ack) => {
     runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(RemoveQueuedCardPayloadSchema, payload);
+      const parsed = parsePayload(ConfirmActionPayloadSchema, payload);
       const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.removeQueuedCard(
-        parsed.roomCode,
-        session.playerId,
-        socket.id,
-        parsed.roundNumber,
-        parsed.cardInstanceId,
-      );
-      return { accepted: true as const };
-    }, logger);
-  });
-
-  socket.on("game:reorder-queued-cards", (payload, ack) => {
-    runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(ReorderQueuedCardsPayloadSchema, payload);
-      const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.reorderQueuedCards(
-        parsed.roomCode,
-        session.playerId,
-        socket.id,
-        parsed.roundNumber,
-        parsed.orderedInstanceIds,
-      );
-      return { accepted: true as const };
-    }, logger);
-  });
-
-  socket.on("game:confirm-round", (payload, ack) => {
-    runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(ConfirmRoundPayloadSchema, payload);
-      const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.confirmRound(
+      roomManager.confirmAction(
         parsed.roomCode,
         session.playerId,
         socket.id,
