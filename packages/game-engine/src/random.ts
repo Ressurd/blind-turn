@@ -1,6 +1,11 @@
 import { MAX_DIE_ROLL, MIN_DIE_ROLL } from "./constants";
 
-export type RandomContext = "SPEED" | "HIDDEN_TIE" | "CLASH" | "EVADE";
+export type RandomContext =
+  | "CLASH"
+  | "EVADE"
+  | "DECK"
+  | "REWARD"
+  | "INSERT";
 
 export interface RandomSource {
   nextInt(min: number, max: number, context?: RandomContext): number;

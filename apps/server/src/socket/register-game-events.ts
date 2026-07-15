@@ -1,10 +1,16 @@
 import {
+  ConfirmRoundPayloadSchema,
   EventsFinishedPayloadSchema,
+  InitialHandSelectionPayloadSchema,
+  QueueCardPayloadSchema,
+  RemoveQueuedCardPayloadSchema,
+  ReorderQueuedCardsPayloadSchema,
   RoomCodePayloadSchema,
-  SubmitActionPayloadSchema,
+  SelectDeckRemovalPayloadSchema,
+  SelectRewardPayloadSchema,
 } from "@blind-turn/shared";
-import type { RoomManager } from "../rooms/room-manager";
 import type { AppLogger } from "../logging/logger";
+import type { RoomManager } from "../rooms/room-manager";
 import { parsePayload, runSocketRequest } from "./socket-handler";
 import { requireSocketSession, type GameSocket } from "./socket-session";
 
@@ -13,18 +19,73 @@ export function registerGameEvents(
   roomManager: RoomManager,
   logger: AppLogger,
 ): void {
-  socket.on("game:submit-action", (payload, ack) => {
+  socket.on("game:select-initial-hand", (payload, ack) => {
     runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(SubmitActionPayloadSchema, payload);
+      const parsed = parsePayload(InitialHandSelectionPayloadSchema, payload);
       const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.submitAction(
+      roomManager.selectInitialHand(
         parsed.roomCode,
         session.playerId,
         socket.id,
-        parsed.turnNumber,
-        parsed.action,
+        parsed.selectedInstanceIds,
       );
-      socket.emit("game:action-accepted", { turnNumber: parsed.turnNumber });
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:queue-card", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(QueueCardPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.queueCard(parsed.roomCode, session.playerId, socket.id, parsed.roundNumber, {
+        cardInstanceId: parsed.cardInstanceId,
+        ...(parsed.targetPlayerId ? { targetPlayerId: parsed.targetPlayerId } : {}),
+        additionalSelection: parsed.additionalSelection ?? null,
+      });
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:remove-queued-card", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(RemoveQueuedCardPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.removeQueuedCard(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
+        parsed.roundNumber,
+        parsed.cardInstanceId,
+      );
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:reorder-queued-cards", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(ReorderQueuedCardsPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.reorderQueuedCards(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
+        parsed.roundNumber,
+        parsed.orderedInstanceIds,
+      );
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:confirm-round", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(ConfirmRoundPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.confirmRound(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
+        parsed.roundNumber,
+      );
       return { accepted: true as const };
     }, logger);
   });
@@ -37,7 +98,30 @@ export function registerGameEvents(
         parsed.roomCode,
         session.playerId,
         socket.id,
-        parsed.turnNumber,
+        parsed.roundNumber,
+      );
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:select-reward", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(SelectRewardPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.selectReward(parsed.roomCode, session.playerId, socket.id, parsed.cardId);
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:select-deck-removal", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(SelectDeckRemovalPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.selectDeckRemoval(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
+        parsed.cardInstanceId,
       );
       return { accepted: true as const };
     }, logger);

@@ -1,22 +1,36 @@
 import type {
+  ActionCardInstance,
   BattleEvent,
+  CardDefinition,
+  CharacterClassId,
   GameResult,
-  PlayerAction,
+  QueuedCardAction,
+} from "@blind-turn/game-engine";
+import {
+  ACTION_TIMEOUT_MS,
+  MAX_HAND_SIZE,
+  REWARD_TIMEOUT_MS,
 } from "@blind-turn/game-engine";
 
 export const ROOM_CODE_LENGTH = 6;
 export const MAX_ROOM_PLAYERS = 6;
 export const MIN_GAME_PLAYERS = 2;
-export const ACTION_TIMEOUT_MS = 30_000;
+export { ACTION_TIMEOUT_MS, REWARD_TIMEOUT_MS };
 export const EVENTS_FINISH_TIMEOUT_MS = 8_000;
 export const DISCONNECT_GRACE_MS = 30_000;
 export const ABANDONED_ROOM_TTL_MS = 10 * 60_000;
+export const CHAT_MESSAGE_MAX_LENGTH = 100;
+export const CHAT_HISTORY_LIMIT = 50;
+export const CHAT_RATE_WINDOW_MS = 1_000;
+export const CHAT_RATE_MAX_MESSAGES = 2;
 
 export type RoomPhase =
   | "LOBBY"
-  | "ROLLING_SPEED"
-  | "SELECTING_ACTION"
-  | "RESOLVING"
+  | "ROUND_STARTING"
+  | "SELECTING_CARDS"
+  | "RESOLVING_ROUND"
+  | "SELECTING_REWARD"
+  | "SELECTING_DECK_REMOVAL"
   | "FINISHED";
 
 export type RoomErrorCode =
@@ -31,15 +45,28 @@ export type RoomErrorCode =
   | "NOT_ROOM_HOST"
   | "NOT_ALL_PLAYERS_READY"
   | "NOT_ENOUGH_PLAYERS"
+  | "CHARACTER_NOT_SELECTED"
   | "PLAYER_NOT_FOUND"
   | "INVALID_RECONNECT_TOKEN"
   | "SOCKET_NOT_OWNER"
   | "INVALID_GAME_PHASE"
   | "PLAYER_DEAD"
-  | "ACTION_ALREADY_SUBMITTED"
-  | "INVALID_ACTION"
-  | "INVALID_TARGET"
-  | "TURN_NUMBER_MISMATCH"
+  | "CARD_NOT_IN_HAND"
+  | "CARD_ALREADY_QUEUED"
+  | "MAX_QUEUED_CARDS_EXCEEDED"
+  | "INVALID_QUEUE_ORDER"
+  | "INVALID_CARD_TARGET"
+  | "INVALID_ADDITIONAL_SELECTION"
+  | "ROUND_ALREADY_CONFIRMED"
+  | "ROUND_NUMBER_MISMATCH"
+  | "REWARD_OPTION_NOT_FOUND"
+  | "INVALID_DECK_REMOVAL"
+  | "ATTACK_CARD_REQUIRED"
+  | "INITIAL_HAND_SELECTION_REQUIRED"
+  | "CHAT_EMPTY"
+  | "CHAT_MESSAGE_TOO_LONG"
+  | "CHAT_RATE_LIMITED"
+  | "CHAT_DEAD_PLAYER"
   | "GAME_ENGINE_FAILURE"
   | "INTERNAL_SERVER_ERROR";
 
@@ -59,15 +86,34 @@ export type SessionCredentials = {
   reconnectToken: string;
 };
 
+export type ChatMessage = {
+  id: string;
+  roomCode: string;
+  playerId: string | null;
+  nickname: string | null;
+  message: string;
+  createdAt: number;
+  kind: "PLAYER" | "SYSTEM";
+};
+
 export type RoomPlayerView = {
   playerId: string;
   nickname: string;
   seatNumber: number;
+  characterId: CharacterClassId | null;
   connected: boolean;
   ready: boolean;
   alive: boolean;
   hp: number;
+  maxHp: number;
+  handCount: number;
+  maxHandSize: number;
   submitted: boolean;
+  usedCardCount: number | null;
+};
+
+export type PrivateCardView = ActionCardInstance & {
+  definition: CardDefinition;
 };
 
 export type PlayerGameView = {
@@ -76,40 +122,57 @@ export type PlayerGameView = {
   selfPlayerId: string;
   phase: RoomPhase;
   players: RoomPlayerView[];
-  turnNumber: number;
-  mySpeed: number | null;
-  mySubmittedAction: PlayerAction | null;
-  counterAvailable: boolean;
+  roundNumber: number;
+  myCharacterId: CharacterClassId | null;
+  myHand: PrivateCardView[];
+  myDiscardPile: PrivateCardView[];
+  myQueuedCards: QueuedCardAction[];
+  myConfirmed: boolean;
+  drawPileCount: number;
+  discardPileCount: number;
+  initialHandOptions: PrivateCardView[];
+  rewardOptions: CardDefinition[];
+  deckRemovalCandidates: PrivateCardView[];
   actionDeadlineAt: number | null;
+  rewardDeadlineAt: number | null;
   result: GameResult | null;
-  totalTurns: number;
+  totalRounds: number;
   fatalError: SocketError | null;
+  chatHistory: ChatMessage[];
+  pendingRoundPlayback: RoundResolvedPayload | null;
 };
 
 export type PublicBattleEvent = Exclude<
   BattleEvent,
-  { type: "SPEED_ROLLED" }
+  { type: "PRIVATE_CARD_DRAWN" }
 >;
 
 export type PublicGameSnapshot = {
-  turnNumber: number;
+  roundNumber: number;
   players: Array<{
     playerId: string;
     hp: number;
+    maxHp: number;
     alive: boolean;
+    handCount: number;
   }>;
   result: GameResult | null;
 };
 
-export type TurnResolvedPayload = {
-  turnNumber: number;
+export type RoundResolvedPayload = {
+  roundNumber: number;
   events: PublicBattleEvent[];
   publicState: PublicGameSnapshot;
 };
 
-export type SubmissionStatusPayload = {
-  turnNumber: number;
-  submittedPlayerIds: string[];
+export type RoundSubmissionStatusPayload = {
+  roundNumber: number;
+  confirmedPlayerIds: string[];
+};
+
+export type CardCountsRevealedPayload = {
+  roundNumber: number;
+  cardCounts: Array<{ playerId: string; count: number }>;
 };
 
 export type CreateRoomResult = {
@@ -119,7 +182,6 @@ export type CreateRoomResult = {
 
 export type JoinRoomResult = CreateRoomResult;
 export type ReconnectRoomResult = CreateRoomResult;
-
 export type SocketAckCallback<T> = (response: SocketAck<T>) => void;
 
 export interface ClientToServerEvents {
@@ -139,6 +201,10 @@ export interface ClientToServerEvents {
     payload: { roomCode: string },
     ack: SocketAckCallback<{ left: true }>,
   ) => void;
+  "room:select-character": (
+    payload: { roomCode: string; characterId: CharacterClassId },
+    ack: SocketAckCallback<{ characterId: CharacterClassId }>,
+  ) => void;
   "room:set-ready": (
     payload: { roomCode: string; ready: boolean },
     ack: SocketAckCallback<{ ready: boolean }>,
@@ -147,21 +213,51 @@ export interface ClientToServerEvents {
     payload: { roomCode: string },
     ack: SocketAckCallback<{ started: true }>,
   ) => void;
-  "game:submit-action": (
+  "game:select-initial-hand": (
+    payload: { roomCode: string; selectedInstanceIds: string[] },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "game:queue-card": (
     payload: {
       roomCode: string;
-      turnNumber: number;
-      action: PlayerAction;
+      roundNumber: number;
+      cardInstanceId: string;
+      targetPlayerId?: string;
+      additionalSelection?: QueuedCardAction["additionalSelection"];
     },
     ack: SocketAckCallback<{ accepted: true }>,
   ) => void;
+  "game:remove-queued-card": (
+    payload: { roomCode: string; roundNumber: number; cardInstanceId: string },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "game:reorder-queued-cards": (
+    payload: { roomCode: string; roundNumber: number; orderedInstanceIds: string[] },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "game:confirm-round": (
+    payload: { roomCode: string; roundNumber: number },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
   "game:events-finished": (
-    payload: { roomCode: string; turnNumber: number },
+    payload: { roomCode: string; roundNumber: number },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "game:select-reward": (
+    payload: { roomCode: string; cardId: string },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "game:select-deck-removal": (
+    payload: { roomCode: string; cardInstanceId: string },
     ack: SocketAckCallback<{ accepted: true }>,
   ) => void;
   "game:request-rematch": (
     payload: { roomCode: string },
     ack: SocketAckCallback<{ reset: true }>,
+  ) => void;
+  "chat:send": (
+    payload: { roomCode: string; message: string },
+    ack: SocketAckCallback<{ sent: true }>,
   ) => void;
 }
 
@@ -169,30 +265,39 @@ export interface ServerToClientEvents {
   "room:created": (payload: CreateRoomResult) => void;
   "room:joined": (payload: JoinRoomResult) => void;
   "room:state-updated": (payload: PlayerGameView) => void;
+  "room:character-selected": (payload: {
+    playerId: string;
+    characterId: CharacterClassId;
+  }) => void;
   "room:error": (payload: SocketError) => void;
   "room:player-disconnected": (payload: { playerId: string }) => void;
   "room:player-reconnected": (payload: { playerId: string }) => void;
-  "game:started": (payload: { turnNumber: number }) => void;
-  "game:private-speed": (payload: {
-    turnNumber: number;
-    speed: number;
-  }) => void;
-  "game:action-accepted": (payload: { turnNumber: number }) => void;
-  "game:submission-status": (payload: SubmissionStatusPayload) => void;
-  "game:turn-resolving": (payload: { turnNumber: number }) => void;
-  "game:turn-resolved": (payload: TurnResolvedPayload) => void;
-  "game:next-turn": (payload: {
-    turnNumber: number;
+  "game:started": (payload: { roundNumber: number }) => void;
+  "game:initial-hand-options": (payload: { cards: PrivateCardView[] }) => void;
+  "game:queue-updated": (payload: { queuedCards: QueuedCardAction[] }) => void;
+  "game:round-submission-status": (payload: RoundSubmissionStatusPayload) => void;
+  "game:round-locked": (payload: { roundNumber: number }) => void;
+  "game:card-counts-revealed": (payload: CardCountsRevealedPayload) => void;
+  "game:round-resolving": (payload: { roundNumber: number }) => void;
+  "game:round-resolved": (payload: RoundResolvedPayload) => void;
+  "game:next-round": (payload: {
+    roundNumber: number;
     actionDeadlineAt: number;
   }) => void;
-  "game:finished": (payload: {
-    result: GameResult;
-    totalTurns: number;
-  }) => void;
+  "game:reward-options": (payload: { cards: CardDefinition[]; deadlineAt: number }) => void;
+  "game:reward-selected": (payload: { playerId: string }) => void;
+  "game:deck-removal-required": (payload: { cards: PrivateCardView[]; deadlineAt: number }) => void;
+  "game:deck-updated": (payload: { deckSize: number }) => void;
+  "game:finished": (payload: { result: GameResult; totalRounds: number }) => void;
   "game:error": (payload: SocketError) => void;
+  "chat:message": (payload: ChatMessage) => void;
+  "chat:history": (payload: { messages: ChatMessage[] }) => void;
+  "chat:error": (payload: SocketError) => void;
 }
 
 export type SocketData = {
   roomCode?: string;
   playerId?: string;
 };
+
+export const PUBLIC_MAX_HAND_SIZE = MAX_HAND_SIZE;

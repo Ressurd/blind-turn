@@ -137,7 +137,8 @@ describe("production server lifecycle", () => {
     expect(stopSpy).toHaveBeenCalledTimes(1);
     expect(server.roomManager.getRoomCount()).toBe(0);
     expect(room.timers.action).toBeNull();
-    expect(room.timers.nextTurn).toBeNull();
+    expect(room.timers.playback).toBeNull();
+    expect(room.timers.reward).toBeNull();
     expect(room.timers.cleanup).toBeNull();
     expect(room.timers.disconnects.size).toBe(0);
   });

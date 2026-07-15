@@ -1,26 +1,52 @@
 import {
+  GameEngineError,
   ProductionRandomSource,
+  chooseAutomaticDeckRemoval,
+  chooseInitialHand,
+  cloneGameState,
+  confirmMissingPlayers,
+  confirmRound,
   createGame,
-  resolveTurn,
-  startTurn,
-  submitAction,
+  haveAllAlivePlayersConfirmed,
+  hasPendingInitialHandSelection,
+  queueCard,
+  removeQueuedCard,
+  reorderQueuedCards,
+  resolveRound,
+  selectDeckRemoval,
+  selectRandomPendingRewards,
+  selectReward,
+  startRound,
   type CreatePlayerInput,
   type GameState,
-  type PlayerAction,
+  type QueuedCardAction,
   type RandomSource,
-  type TurnResolvedPayload,
+  type RoundResolvedPayload,
 } from "@blind-turn/shared";
 import { createPublicEvents, createPublicSnapshot } from "./event-player";
 import { RoomError } from "../rooms/room-error";
 
 export type RandomSourceFactory = () => RandomSource;
 
+function asRoomError(error: unknown): never {
+  if (error instanceof GameEngineError) throw new RoomError(error.code);
+  if (error instanceof Error) {
+    const known = [
+      "INVALID_GAME_PHASE",
+      "INITIAL_HAND_SELECTION_REQUIRED",
+    ] as const;
+    const code = known.find((candidate) => error.message.includes(candidate));
+    if (code) throw new RoomError(code);
+  }
+  throw error;
+}
+
 export class GameSession {
   private state: GameState | null = null;
-  private readonly submittedPlayerIds = new Set<string>();
   private readonly eventsFinishedPlayerIds = new Set<string>();
   private resolving = false;
-  private lastResolvedTurn = 0;
+  private lastResolvedRound = 0;
+  private lastResolvedPayload: RoundResolvedPayload | null = null;
 
   constructor(
     private readonly randomSourceFactory: RandomSourceFactory = () =>
@@ -28,10 +54,13 @@ export class GameSession {
   ) {}
 
   start(players: CreatePlayerInput[]): GameState {
-    this.state = startTurn(createGame(players), this.randomSourceFactory());
-    this.submittedPlayerIds.clear();
+    this.state = createGame(players, this.randomSourceFactory());
+    if (!hasPendingInitialHandSelection(this.state)) {
+      this.state = startRound(this.state, this.randomSourceFactory());
+    }
     this.eventsFinishedPlayerIds.clear();
-    this.lastResolvedTurn = 0;
+    this.lastResolvedRound = 0;
+    this.lastResolvedPayload = null;
     return this.getState();
   }
 
@@ -40,97 +69,189 @@ export class GameSession {
     return this.state;
   }
 
-  getSubmittedPlayerIds(): string[] {
-    return [...this.submittedPlayerIds];
+  getLastResolvedRound(): number {
+    return this.lastResolvedRound;
   }
 
-  isSubmitted(playerId: string): boolean {
-    return this.submittedPlayerIds.has(playerId);
+  getLastResolvedPayload(): RoundResolvedPayload | null {
+    return this.lastResolvedPayload
+      ? JSON.parse(JSON.stringify(this.lastResolvedPayload)) as RoundResolvedPayload
+      : null;
   }
 
-  getLastResolvedTurn(): number {
-    return this.lastResolvedTurn;
-  }
-
-  submit(playerId: string, turnNumber: number, action: PlayerAction): void {
-    const state = this.getState();
-    if (state.turnNumber !== turnNumber) {
-      throw new RoomError("TURN_NUMBER_MISMATCH");
-    }
-    if (state.phase !== "SELECTING_ACTION") {
-      throw new RoomError("INVALID_GAME_PHASE");
-    }
-    const player = state.players.find((candidate) => candidate.id === playerId);
-    if (!player) throw new RoomError("PLAYER_NOT_FOUND");
-    if (!player.alive) throw new RoomError("PLAYER_DEAD");
-    if (this.submittedPlayerIds.has(playerId)) {
-      throw new RoomError("ACTION_ALREADY_SUBMITTED");
-    }
-
+  selectInitialHand(playerId: string, selectedInstanceIds: string[]): void {
     try {
-      this.state = submitAction(state, playerId, action);
+      this.state = chooseInitialHand(
+        this.getState(),
+        playerId,
+        selectedInstanceIds,
+      );
+      if (!hasPendingInitialHandSelection(this.state)) {
+        this.state = startRound(this.state, this.randomSourceFactory());
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Invalid action";
-      const targetError = /target|Target|themselves|dead player/.test(message);
-      throw new RoomError(targetError ? "INVALID_TARGET" : "INVALID_ACTION");
+      asRoomError(error);
     }
-    this.submittedPlayerIds.add(playerId);
   }
 
-  haveAllAlivePlayersSubmitted(): boolean {
-    return this.getState()
-      .players.filter((player) => player.alive)
-      .every((player) => this.submittedPlayerIds.has(player.id));
+  queue(
+    playerId: string,
+    roundNumber: number,
+    input: Omit<QueuedCardAction, "order">,
+  ): void {
+    try {
+      this.state = queueCard(this.getState(), playerId, roundNumber, input);
+    } catch (error) {
+      asRoomError(error);
+    }
   }
 
-  resolveCurrentTurn(turnNumber: number): TurnResolvedPayload | null {
-    const state = this.getState();
+  removeQueued(playerId: string, roundNumber: number, instanceId: string): void {
+    try {
+      this.state = removeQueuedCard(
+        this.getState(),
+        playerId,
+        roundNumber,
+        instanceId,
+      );
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  reorderQueued(
+    playerId: string,
+    roundNumber: number,
+    instanceIds: string[],
+  ): void {
+    try {
+      this.state = reorderQueuedCards(
+        this.getState(),
+        playerId,
+        roundNumber,
+        instanceIds,
+      );
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  confirm(playerId: string, roundNumber: number): void {
+    try {
+      this.state = confirmRound(this.getState(), playerId, roundNumber);
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  getConfirmedPlayerIds(): string[] {
+    return this.getState().players
+      .filter((player) => player.alive && player.deckState.confirmed)
+      .map((player) => player.id);
+  }
+
+  haveAllAlivePlayersConfirmed(): boolean {
+    return haveAllAlivePlayersConfirmed(this.getState());
+  }
+
+  resolveCurrentRound(roundNumber: number): RoundResolvedPayload | null {
+    const current = this.getState();
     if (
-      this.resolving ||
-      state.turnNumber !== turnNumber ||
-      this.lastResolvedTurn === turnNumber ||
-      (state.phase !== "SELECTING_ACTION" && state.phase !== "RESOLVING")
+      this.resolving
+      || current.roundNumber !== roundNumber
+      || this.lastResolvedRound === roundNumber
+      || current.phase !== "SELECTING_CARDS"
     ) {
       return null;
     }
-
     this.resolving = true;
     try {
-      let submittedState = state;
-      for (const player of state.players.filter((candidate) => candidate.alive)) {
-        if (this.submittedPlayerIds.has(player.id)) continue;
-        submittedState = submitAction(submittedState, player.id, { type: "PASS" });
-        this.submittedPlayerIds.add(player.id);
-      }
-      if (submittedState.phase !== "RESOLVING") {
-        throw new RoomError("INVALID_GAME_PHASE");
-      }
-      const resolution = resolveTurn(submittedState, this.randomSourceFactory());
+      const locked = haveAllAlivePlayersConfirmed(current)
+        ? cloneGameState(current)
+        : confirmMissingPlayers(current);
+      const resolution = resolveRound(locked, this.randomSourceFactory());
       this.state = resolution.state;
-      this.lastResolvedTurn = turnNumber;
+      this.lastResolvedRound = roundNumber;
       this.eventsFinishedPlayerIds.clear();
-      return {
-        turnNumber,
+      this.lastResolvedPayload = {
+        roundNumber,
         events: createPublicEvents(resolution.events),
         publicState: createPublicSnapshot(resolution.state),
       };
+      return this.getLastResolvedPayload();
+    } catch (error) {
+      asRoomError(error);
     } finally {
       this.resolving = false;
     }
   }
 
-  startNextTurn(): GameState {
-    const state = this.getState();
-    if (state.phase !== "WAITING") throw new RoomError("INVALID_GAME_PHASE");
-    this.state = startTurn(state, this.randomSourceFactory());
-    this.submittedPlayerIds.clear();
-    this.eventsFinishedPlayerIds.clear();
-    return this.state;
+  startNextRound(): GameState {
+    try {
+      this.state = startRound(this.getState(), this.randomSourceFactory());
+      this.eventsFinishedPlayerIds.clear();
+      this.lastResolvedPayload = null;
+      return this.state;
+    } catch (error) {
+      asRoomError(error);
+    }
   }
 
-  markEventsFinished(playerId: string, turnNumber: number): void {
-    if (turnNumber !== this.lastResolvedTurn) {
-      throw new RoomError("TURN_NUMBER_MISMATCH");
+  chooseReward(playerId: string, cardId: string): void {
+    try {
+      this.state = selectReward(
+        this.getState(),
+        playerId,
+        cardId,
+        this.randomSourceFactory(),
+      );
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  chooseRandomRewards(): void {
+    try {
+      this.state = selectRandomPendingRewards(
+        this.getState(),
+        this.randomSourceFactory(),
+      );
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  removeDeckCard(playerId: string, instanceId: string): void {
+    try {
+      this.state = selectDeckRemoval(
+        this.getState(),
+        playerId,
+        instanceId,
+        this.randomSourceFactory(),
+      );
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  removeAutomaticDeckCards(): void {
+    let next = this.getState();
+    for (const player of next.players.filter(
+      (candidate) => candidate.alive && candidate.deckState.pendingRemovalRequired,
+    )) {
+      next = selectDeckRemoval(
+        next,
+        player.id,
+        chooseAutomaticDeckRemoval(player),
+        this.randomSourceFactory(),
+      );
+    }
+    this.state = next;
+  }
+
+  markEventsFinished(playerId: string, roundNumber: number): void {
+    if (roundNumber !== this.lastResolvedRound) {
+      throw new RoomError("ROUND_NUMBER_MISMATCH");
     }
     this.eventsFinishedPlayerIds.add(playerId);
   }

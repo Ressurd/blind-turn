@@ -17,7 +17,7 @@ export function parsePayload<T>(schema: ZodType<T>, payload: unknown): T {
 
 export function runSocketRequest<T>(
   socket: GameSocket,
-  channel: "room" | "game",
+  channel: "room" | "game" | "chat",
   ack: SocketAckCallback<T>,
   operation: () => T,
   logger: AppLogger = noopLogger,

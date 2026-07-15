@@ -3,6 +3,7 @@ import {
   RoomCreatePayloadSchema,
   RoomJoinPayloadSchema,
   RoomReconnectPayloadSchema,
+  SelectCharacterPayloadSchema,
   SetReadyPayloadSchema,
 } from "@blind-turn/shared";
 import type { RoomManager } from "../rooms/room-manager";
@@ -94,6 +95,20 @@ export function registerRoomEvents(
         parsed.ready,
       );
       return { ready: parsed.ready };
+    }, logger);
+  });
+
+  socket.on("room:select-character", (payload, ack) => {
+    runSocketRequest(socket, "room", ack, () => {
+      const parsed = parsePayload(SelectCharacterPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.selectCharacter(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
+        parsed.characterId,
+      );
+      return { characterId: parsed.characterId };
     }, logger);
   });
 

@@ -1,110 +1,263 @@
-export type PlayerActionType =
+export type CharacterClassId =
+  | "DUELIST"
+  | "BERSERKER"
+  | "GUARDIAN"
+  | "TACTICIAN";
+
+export type CardClassId = CharacterClassId | "COMMON" | "BASE";
+
+export type CardCategory =
   | "ATTACK"
-  | "DEFEND"
+  | "GUARD"
   | "EVADE"
   | "COUNTER"
-  | "PASS";
+  | "UTILITY";
 
-export type PlayerAction =
-  | { type: "ATTACK"; targetPlayerId: string }
-  | { type: "DEFEND" }
-  | { type: "EVADE" }
-  | { type: "COUNTER"; targetPlayerId: string }
-  | { type: "PASS" };
+export type CardTargetType = "NONE" | "ENEMY" | "SELF";
+
+export type CardEffectKind =
+  | "ATTACK"
+  | "GUARD"
+  | "EVADE"
+  | "COUNTER"
+  | "HEAL"
+  | "DRAW"
+  | "RECYCLE"
+  | "MULLIGAN"
+  | "SIFT"
+  | "LAST_STAND";
+
+export type CardSpecialRule =
+  | "DRAW_ON_CLASH_WIN"
+  | "EXECUTE"
+  | "RETURN_IF_NO_ATTACK";
+
+export type CardEffectDefinition = {
+  kind: CardEffectKind;
+  damage?: number;
+  clashBonus?: number;
+  evadeDifficulty?: number;
+  guardReduction?: number;
+  perAttackReduction?: number;
+  guardPierce?: number;
+  counterAttackerDamage?: number;
+  counterSelfDamage?: number;
+  evadeRollBonus?: number;
+  evadeFailureDamage?: number;
+  heal?: number;
+  draw?: number;
+  selfDamage?: number;
+  executeThreshold?: number;
+  executeBonusDamage?: number;
+  special?: CardSpecialRule;
+};
+
+export type CardDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  category: CardCategory;
+  classId: CardClassId;
+  targetType: CardTargetType;
+  effect: CardEffectDefinition;
+};
+
+export type ActionCardInstance = {
+  instanceId: string;
+  cardId: string;
+};
+
+export type QueuedCardAdditionalSelection =
+  | { discardCardInstanceId: string }
+  | { handCardInstanceIds: string[] }
+  | { returnCardInstanceId: string }
+  | null;
+
+export type QueuedCardAction = {
+  cardInstanceId: string;
+  order: 0 | 1 | 2;
+  targetPlayerId?: string;
+  additionalSelection?: QueuedCardAdditionalSelection;
+};
+
+export type PlayerDeckState = {
+  drawPile: ActionCardInstance[];
+  hand: ActionCardInstance[];
+  discardPile: ActionCardInstance[];
+  queuedCards: QueuedCardAction[];
+  confirmed: boolean;
+  pendingRewardOptions: string[];
+  pendingRewardCardId: string | null;
+  pendingRemovalRequired: boolean;
+  pendingInitialHandSelection: ActionCardInstance[];
+  nextInstanceNumber: number;
+};
 
 export type CreatePlayerInput = {
   id: string;
   nickname: string;
   seatNumber: number;
+  characterId: CharacterClassId;
 };
 
 export type PlayerState = {
   id: string;
   nickname: string;
   seatNumber: number;
+  characterId: CharacterClassId;
+  maxHp: number;
   hp: number;
   alive: boolean;
-  speedRoll: number | null;
-  hiddenTieRoll: number | null;
-  selectedAction: PlayerAction | null;
-  actionResolved: boolean;
-  activeDefense: boolean;
-  activeEvade: boolean;
-  activeCounterTargetId: string | null;
-  facingTargetId: string | null;
-  previousTurnActionType: PlayerActionType | null;
+  deckState: PlayerDeckState;
 };
 
 export type GamePhase =
-  | "WAITING"
-  | "ROLLING_SPEED"
-  | "SELECTING_ACTION"
-  | "RESOLVING"
+  | "ROUND_STARTING"
+  | "SELECTING_CARDS"
+  | "RESOLVING_ROUND"
+  | "SELECTING_REWARD"
+  | "SELECTING_DECK_REMOVAL"
   | "FINISHED";
 
 export type GameResult =
   | { type: "WINNER"; winnerPlayerId: string }
   | { type: "DRAW" };
 
-export type ActionSkipReason =
-  | "DEAD"
-  | "TARGET_DEAD"
-  | "ACTION_ALREADY_CONSUMED";
+export type DamageSource =
+  | "ATTACK"
+  | "COUNTER"
+  | "SELF"
+  | "EVADE_FAILURE";
 
 export type BattleEvent =
-  | { type: "TURN_STARTED"; turnNumber: number }
-  | { type: "SPEED_ROLLED"; playerId: string; speed: number }
+  | { type: "ROUND_STARTED"; roundNumber: number }
   | {
-      type: "ACTION_STARTED";
-      playerId: string;
-      actionType: PlayerActionType;
+      type: "ROUND_LOCKED";
+      roundNumber: number;
+      cardCounts: Array<{ playerId: string; count: number }>;
     }
-  | { type: "ATTACK_STARTED"; attackerId: string; targetId: string }
-  | { type: "CLASH_STARTED"; playerIds: [string, string] }
-  | { type: "CLASH_ROLLED"; playerId: string; roll: number }
-  | { type: "CLASH_RESOLVED"; winnerId: string; loserId: string }
-  | { type: "DEFENSE_ACTIVATED"; playerId: string }
-  | { type: "EVADE_ACTIVATED"; playerId: string }
+  | { type: "STEP_STARTED"; roundNumber: number; stepIndex: number }
+  | {
+      type: "CARD_REVEALED";
+      roundNumber: number;
+      stepIndex: number;
+      playerId: string;
+      cardInstanceId: string;
+      cardId: string;
+      targetPlayerId?: string;
+    }
+  | {
+      type: "CARD_CANCELLED";
+      roundNumber: number;
+      stepIndex: number;
+      playerId: string;
+      cardInstanceId: string;
+      reason: "PLAYER_DEAD" | "TARGET_DEAD";
+    }
+  | {
+      type: "ATTACK_STARTED";
+      stepIndex: number;
+      attackerId: string;
+      targetId: string;
+      cardId: string;
+      damage: number;
+    }
+  | {
+      type: "CLASH_STARTED";
+      stepIndex: number;
+      playerIds: [string, string];
+      cardIds: [string, string];
+    }
+  | {
+      type: "CLASH_ROLLED";
+      stepIndex: number;
+      playerId: string;
+      roll: number;
+      bonus: number;
+      total: number;
+    }
+  | {
+      type: "CLASH_RESOLVED";
+      stepIndex: number;
+      winnerId: string;
+      loserId: string;
+    }
+  | {
+      type: "GUARD_ACTIVATED";
+      stepIndex: number;
+      playerId: string;
+      reduction: number;
+      mode: "TOTAL" | "PER_ATTACK" | "LAST_STAND";
+    }
+  | {
+      type: "GUARD_RESOLVED";
+      stepIndex: number;
+      playerId: string;
+      incomingDamage: number;
+      reducedDamage: number;
+      finalDamage: number;
+    }
   | {
       type: "EVADE_ROLLED";
+      stepIndex: number;
       playerId: string;
       attackerId: string;
       roll: number;
-      attackerSpeed: number;
+      bonus: number;
+      difficulty: number;
+      succeeded: boolean;
     }
-  | { type: "EVADE_SUCCEEDED"; playerId: string }
-  | { type: "EVADE_FAILED"; playerId: string }
-  | {
-      type: "COUNTER_ACTIVATED";
-      playerId: string;
-      targetPlayerId: string;
-    }
+  | { type: "EVADE_FAILED"; stepIndex: number; playerId: string }
   | {
       type: "COUNTER_TRIGGERED";
+      stepIndex: number;
       counterPlayerId: string;
       attackerId: string;
+      attackerDamage: number;
+      counterDamage: number;
     }
-  | { type: "EXPOSED_ATTACK"; attackerId: string; targetId: string }
   | {
-      type: "DAMAGE_APPLIED";
+      type: "HEAL_APPLIED";
+      stepIndex: number;
       playerId: string;
-      damage: number;
+      amount: number;
       remainingHp: number;
     }
   | {
-      type: "ACTION_SKIPPED";
+      type: "DAMAGE_APPLIED";
+      stepIndex: number;
       playerId: string;
-      reason: ActionSkipReason;
+      damage: number;
+      remainingHp: number;
+      source: DamageSource;
     }
-  | { type: "PLAYER_DIED"; playerId: string }
+  | { type: "LAST_STAND_TRIGGERED"; stepIndex: number; playerId: string }
+  | { type: "PLAYER_DIED"; stepIndex: number; playerId: string }
+  | { type: "STEP_FINISHED"; roundNumber: number; stepIndex: number }
+  | { type: "ROUND_FINISHED"; roundNumber: number }
+  | { type: "PRIVATE_CARD_DRAWN"; playerId: string; count: number }
   | { type: "GAME_FINISHED"; result: GameResult };
 
 export type GameState = {
   phase: GamePhase;
-  turnNumber: number;
+  roundNumber: number;
   players: PlayerState[];
-  actionOrder: string[];
-  turnStartHp: Record<string, number>;
   result: GameResult | null;
   pendingEvents: BattleEvent[];
 };
+
+export type GameErrorCode =
+  | "CARD_NOT_IN_HAND"
+  | "CARD_ALREADY_QUEUED"
+  | "MAX_QUEUED_CARDS_EXCEEDED"
+  | "INVALID_QUEUE_ORDER"
+  | "INVALID_CARD_TARGET"
+  | "INVALID_ADDITIONAL_SELECTION"
+  | "ROUND_ALREADY_CONFIRMED"
+  | "ROUND_NUMBER_MISMATCH"
+  | "INVALID_GAME_PHASE"
+  | "PLAYER_DEAD"
+  | "REWARD_OPTION_NOT_FOUND"
+  | "INVALID_DECK_REMOVAL"
+  | "ATTACK_CARD_REQUIRED"
+  | "INITIAL_HAND_SELECTION_REQUIRED";

@@ -13,9 +13,9 @@ export function getPlayer(
 }
 
 export function getOrderedPlayers(state: Readonly<GameState>): PlayerState[] {
-  return state.actionOrder
-    .map((playerId) => getPlayer(state, playerId))
-    .filter((player): player is PlayerState => Boolean(player));
+  return [...state.players].sort(
+    (left, right) => left.seatNumber - right.seatNumber,
+  );
 }
 
 export function formatHp(internalHp: number): string {

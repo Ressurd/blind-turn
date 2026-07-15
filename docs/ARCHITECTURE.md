@@ -1,6 +1,6 @@
-# BLIND TURN 아키텍처
+# BLIND TURN V2 아키텍처
 
-## 패키지 경계
+## 의존 방향
 
 ```text
 apps/web ───────────────┐
@@ -8,11 +8,9 @@ apps/web ───────────────┐
 apps/server → packages/shared → packages/game-engine
 ```
 
-`game-engine`은 React, Next.js, Socket.IO, 브라우저 저장소에 의존하지 않는다. 온라인 서버도 전투 규칙을 복사하지 않고 `createGame`, `startTurn`, `submitAction`, `resolveTurn`을 호출한다.
+`game-engine`은 React, Socket.IO, 브라우저와 분리된 순수 TypeScript 모듈입니다. 카드 정의, 캐릭터 정의, 덱 조작, 큐 검증, 보상과 `resolveRound` 판정이 이 패키지에 있습니다.
 
-## 서버 권한형 구조
-
-클라이언트가 제출할 수 있는 값은 닉네임, 방 코드, 준비 상태, 행동 종류와 대상, 재경기 요청뿐이다. 체력, 생존 여부, 주사위, 행동 순서, 피해와 승패는 서버가 결정한다.
+## 서버 권한 흐름
 
 ```mermaid
 sequenceDiagram
@@ -20,68 +18,84 @@ sequenceDiagram
   participant S as Socket.IO Server
   participant R as RoomManager
   participant G as GameSession
-  participant E as game-engine
-  C->>S: game:submit-action
-  S->>R: 소켓 소유권과 payload 검증
-  R->>G: submit(playerId, action)
-  G->>E: submitAction(state, ...)
-  R->>G: 전원 제출 또는 timeout
-  G->>E: resolveTurn(state, random)
-  E-->>G: GameState + BattleEvent[]
-  G-->>S: 비공개 정보 제거 결과
-  S-->>C: game:turn-resolved
+  participant E as RoundResolver
+  C->>S: game:queue-card / reorder / confirm-round
+  S->>R: Zod payload + socket ownership 검증
+  R->>G: private queue mutation
+  R-->>C: owner-only queue update
+  R->>G: all confirmed or 60s timeout
+  G->>E: resolveRound(state, RandomSource)
+  E-->>G: final GameState + BattleEvent[]
+  G-->>S: PRIVATE_CARD_DRAWN 제거
+  S-->>C: card-counts-revealed + round-resolved
+  C->>S: events-finished
+  S-->>C: next-round or private reward options
 ```
 
-## RoomManager 책임
+클라이언트는 HP, 덱, 주사위나 판정 결과를 제출할 수 없습니다. 서버가 세션의 닉네임과 playerId를 사용하므로 채팅도 신원을 위조할 수 없습니다.
 
-- 고유 6자리 방 코드와 좌석 발급
-- 2~6인 입장, 닉네임 중복, 준비 및 방장 권한 검증
-- `playerId`, `reconnectToken`, 현재 `socketId`의 소유권 연결
-- 행동 제한 시간과 이벤트 재생 최대 대기 시간 관리
-- 로비 개별 연결 해제 30초 유예, 전원 연결 해제 방 10분 유예, 방장 위임과 방 정리
-- 마지막 제출과 타이머가 겹쳐도 한 번만 판정하도록 조정
+## 엔진 상태
 
-## GameSession 책임
+`PlayerState.deckState`가 각 플레이어 카드의 단일 원본입니다.
 
-- 기존 게임 엔진의 `GameState` 보관
-- 턴 번호, 생존, 제출 중복, 대상과 연속 반격 검증
-- 시간 초과 플레이어에게 효과 없는 `PASS` 제출
-- 한 턴당 `resolveTurn()` 한 번만 호출
-- 공개 이벤트와 최종 공개 스냅샷 생성
-- 결과 확인 완료 플레이어 추적과 다음 턴 시작
+- `drawPile`, `hand`, `discardPile`
+- `queuedCards`: 확정 전 0~3장과 대상/추가 선택
+- `confirmed`
+- `pendingInitialHandSelection`: 전술가 시작 4장
+- `pendingRewardOptions`, `pendingRewardCardId`, `pendingRemovalRequired`
 
-## 플레이어별 상태 필터링
+`GameState.phase`는 `ROUND_STARTING → SELECTING_CARDS → RESOLVING_ROUND → (SELECTING_REWARD → SELECTING_DECK_REMOVAL) → ROUND_STARTING`으로 이동하며 생존자가 1명 이하이면 `FINISHED`가 됩니다.
 
-`createPlayerView(room, viewerPlayerId)`는 각 소켓에 별도 뷰를 만든다.
+## 단계 동시성
 
-공개되는 값:
+`resolveRound`는 큐의 order 0, 1, 2를 `StepResolver`에 전달합니다. 한 단계는 다음 순서로 계산합니다.
 
-- 모든 플레이어의 닉네임, 좌석, 연결·준비, 체력·생존, 제출 여부
-- 자신의 속도와 제출 행동
-- 현재 턴, 단계, 행동 제한 시간, 공개 결과
+1. 단계 시작 시 생존/대상 상태를 고정하고 카드를 동시에 공개
+2. 상호 공격 합, 지정 반격, 회피, 방어와 유틸리티 계산
+3. 단계 시작 HP를 기준으로 회복과 모든 피해를 모음
+4. HP를 동시에 갱신한 뒤 사망 처리
+5. 다음 단계부터 사망자 카드 또는 사망 대상을 취소
 
-제거되는 값:
+따라서 이번 단계에서 치명 피해를 받는 플레이어의 같은 단계 행동은 실행되지만 이후 예약 행동은 실행되지 않습니다. `RoundResolver`는 좌석 순서를 결과 결정의 대체 우선순위로 사용하지 않으며, 합 동률만 재굴림합니다.
 
-- 다른 플레이어의 속도와 행동·대상
-- 모든 숨김 동률 주사위
-- 서버 난수 상태와 재접속 토큰
+## 공개/비공개 뷰
 
-`SPEED_ROLLED`는 공개 전투 이벤트에서 제거한다. 합과 회피 주사위는 턴 판정 이후 연출할 공개 결과에만 포함된다.
+`createPlayerView(room, viewerPlayerId)`가 소켓별 뷰를 만듭니다.
 
-## 재접속
+공개:
 
-Socket ID는 플레이어 ID로 사용하지 않는다. 입장 시 받은 `playerId`와 `reconnectToken`을 브라우저 localStorage에 저장한다. 새 소켓이 토큰을 검증받으면 기존 세션의 `socketId`만 교체하고 개인 속도, 제출 행동, 제한 시간을 포함한 최신 뷰를 다시 보낸다.
+- 닉네임, 좌석, 캐릭터, 연결/준비, HP/생존
+- 손패 장수와 확정 여부
+- 라운드 잠금 이후에만 사용 카드 장수
+- 완료된 공개 BattleEvent, 결과, 채팅
 
-## 중복 판정 방지
+본인 전용:
 
-`GameSession`은 해결 중 잠금과 마지막 해결 턴 번호를 보관한다. `RoomManager`가 마지막 제출과 시간 초과 콜백에서 동시에 해결을 요청해도 현재 턴은 첫 호출에서만 처리된다. 방·재경기 삭제 시 관련 타이머를 모두 해제한다.
+- 손패/버린 카드의 instanceId와 정의
+- 큐의 카드, 순서, 대상과 추가 선택
+- 뽑기/버림 더미 장수
+- 전술가 시작 선택지, 보상 3장, 제거 후보
 
-전투 엔진 또는 다음 턴 타이머에서 예상하지 못한 예외가 발생하면 해당 방을 `FINISHED`로 전환하고 `GAME_ENGINE_FAILURE`를 전달한다. 진행 중 상태로 무한 대기시키지 않으며 방장은 같은 참가자로 재경기를 준비할 수 있다.
+미공개:
 
-## 다음 턴 동기화
+- 상대 손패/큐/대상/순서
+- 뽑기 더미 순서와 서버 난수 상태
+- reconnectToken과 전체 GameState
 
-클라이언트는 이벤트 재생 완료 또는 건너뛰기 후 `game:events-finished`를 보낸다. 연결된 생존자 전원이 완료하면 즉시 다음 턴을 시작하며, 연결 해제로 영구 대기하지 않도록 8초 후 서버가 자동 진행한다.
+`PRIVATE_CARD_DRAWN`은 공개 이벤트에서 제거됩니다. 합/회피 주사위는 판정 후에만 공개됩니다.
 
-## 배포 경계
+## RoomManager와 타이머
 
-현재 방과 재접속 세션은 서버 메모리에만 존재한다. 여러 서버 프로세스로 확장하려면 Redis 어댑터, 공유 방 저장소, 고정 세션 라우팅이 추가로 필요하다.
+- 행동 선택: 서버 기준 60초. 미확정 플레이어는 카드 0장으로 확정
+- 전투 재생: 연결된 플레이어의 완료 신호 또는 8초 후 자동 진행
+- 보상/덱 제거: 서버 기준 각각 30초. 미선택은 서버가 유효한 선택을 자동 적용
+- 로비 연결 해제: 30초 뒤 제거
+- 전원 연결 해제 방: 10분 뒤 삭제
+
+마지막 확정과 timeout이 겹쳐도 `GameSession.lastResolvedRound`와 resolving 잠금으로 같은 라운드를 한 번만 해결합니다. 방 삭제/재경기/서버 종료 시 action, playback, reward, cleanup, disconnect 타이머를 정리합니다.
+
+## 재접속과 재생 복구
+
+Socket ID와 playerId를 분리합니다. 브라우저는 `roomCode`, `playerId`, `reconnectToken`만 localStorage에 저장합니다. 토큰 검증 후 서버는 소켓 소유권을 교체하고 본인 손패/큐/선택/기한/최근 채팅을 복원합니다. 전투 재생 도중이면 `pendingRoundPlayback`도 전달해 최종 HP로 즉시 건너뛰지 않고 해당 라운드를 다시 재생할 수 있습니다.
+
+서버 프로세스 재시작 후에는 메모리 방이 사라지므로 복구할 수 없습니다. 다중 인스턴스에는 공유 방 저장소, Redis Socket.IO adapter와 고정 세션 전략이 필요합니다.

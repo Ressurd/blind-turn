@@ -2,18 +2,26 @@ import { randomUUID } from "node:crypto";
 import {
   ABANDONED_ROOM_TTL_MS,
   ACTION_TIMEOUT_MS,
+  CHAT_HISTORY_LIMIT,
+  CHAT_MESSAGE_MAX_LENGTH,
+  CHAT_RATE_MAX_MESSAGES,
+  CHAT_RATE_WINDOW_MS,
   DISCONNECT_GRACE_MS,
   EVENTS_FINISH_TIMEOUT_MS,
   MAX_ROOM_PLAYERS,
   MIN_GAME_PLAYERS,
   NicknameSchema,
-  type PlayerAction,
+  ProductionRandomSource,
+  REWARD_TIMEOUT_MS,
+  getDeckSize,
+  type CharacterClassId,
+  type ChatMessage,
   type PlayerGameView,
+  type QueuedCardAction,
+  type RoundResolvedPayload,
+  type RoundSubmissionStatusPayload,
   type SessionCredentials,
   type SocketError,
-  type SubmissionStatusPayload,
-  type TurnResolvedPayload,
-  ProductionRandomSource,
 } from "@blind-turn/shared";
 import { GameSession, type RandomSourceFactory } from "../game/game-session";
 import { createPlayerView } from "../game/player-view";
@@ -33,30 +41,49 @@ export type RoomManagerEvent =
   | { type: "PLAYER_DISCONNECTED"; roomCode: string; playerId: string }
   | { type: "PLAYER_RECONNECTED"; roomCode: string; playerId: string }
   | {
-      type: "GAME_STARTED";
+      type: "CHARACTER_SELECTED";
       roomCode: string;
-      turnNumber: number;
-      actionDeadlineAt: number;
+      playerId: string;
+      characterId: CharacterClassId;
+    }
+  | { type: "GAME_STARTED"; roomCode: string; roundNumber: number }
+  | {
+      type: "QUEUE_UPDATED";
+      roomCode: string;
+      playerId: string;
+      queuedCards: QueuedCardAction[];
     }
   | {
-      type: "SUBMISSION_STATUS";
+      type: "ROUND_SUBMISSION_STATUS";
       roomCode: string;
-      payload: SubmissionStatusPayload;
+      payload: RoundSubmissionStatusPayload;
     }
-  | { type: "TURN_RESOLVING"; roomCode: string; turnNumber: number }
-  | { type: "TURN_RESOLVED"; roomCode: string; payload: TurnResolvedPayload }
+  | { type: "ROUND_LOCKED"; roomCode: string; roundNumber: number }
   | {
-      type: "NEXT_TURN";
+      type: "CARD_COUNTS_REVEALED";
       roomCode: string;
-      turnNumber: number;
+      roundNumber: number;
+      cardCounts: Array<{ playerId: string; count: number }>;
+    }
+  | { type: "ROUND_RESOLVING"; roomCode: string; roundNumber: number }
+  | { type: "ROUND_RESOLVED"; roomCode: string; payload: RoundResolvedPayload }
+  | {
+      type: "NEXT_ROUND";
+      roomCode: string;
+      roundNumber: number;
       actionDeadlineAt: number;
     }
+  | { type: "REWARD_OPTIONS"; roomCode: string; deadlineAt: number }
+  | { type: "REWARD_SELECTED"; roomCode: string; playerId: string }
+  | { type: "DECK_REMOVAL_REQUIRED"; roomCode: string; deadlineAt: number }
+  | { type: "DECK_UPDATED"; roomCode: string; playerId: string; deckSize: number }
   | {
       type: "GAME_FINISHED";
       roomCode: string;
-      result: NonNullable<TurnResolvedPayload["publicState"]["result"]>;
-      totalTurns: number;
+      result: NonNullable<RoundResolvedPayload["publicState"]["result"]>;
+      totalRounds: number;
     }
+  | { type: "CHAT_MESSAGE"; roomCode: string; message: ChatMessage }
   | { type: "GAME_ERROR"; roomCode: string; error: SocketError };
 
 export type RoomManagerOptions = {
@@ -67,6 +94,7 @@ export type RoomManagerOptions = {
   now: () => number;
   actionTimeoutMs: number;
   eventsFinishTimeoutMs: number;
+  rewardTimeoutMs: number;
   disconnectGraceMs: number;
   abandonedRoomTtlMs: number;
   logger: AppLogger;
@@ -85,6 +113,7 @@ const DEFAULT_OPTIONS: RoomManagerOptions = {
   now: () => Date.now(),
   actionTimeoutMs: ACTION_TIMEOUT_MS,
   eventsFinishTimeoutMs: EVENTS_FINISH_TIMEOUT_MS,
+  rewardTimeoutMs: REWARD_TIMEOUT_MS,
   disconnectGraceMs: DISCONNECT_GRACE_MS,
   abandonedRoomTtlMs: ABANDONED_ROOM_TTL_MS,
   logger: noopLogger,
@@ -102,6 +131,490 @@ export class RoomManager {
   onEvent(listener: (event: RoomManagerEvent) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  createRoom(nicknameInput: string, socketId: string): RoomIdentityResult {
+    const nickname = this.normalizeNickname(nicknameInput);
+    const roomCode = this.uniqueRoomCode();
+    const player = this.createPlayer(nickname, socketId, 1);
+    const now = this.options.now();
+    const room: RoomState = {
+      roomCode,
+      hostPlayerId: player.playerId,
+      phase: "LOBBY",
+      players: [player],
+      game: null,
+      actionDeadlineAt: null,
+      rewardDeadlineAt: null,
+      lockedCardCounts: new Map(),
+      chatMessages: [],
+      chatRateLimits: new Map(),
+      nextChatMessageNumber: 1,
+      fatalError: null,
+      createdAt: now,
+      updatedAt: now,
+      timers: {
+        action: null,
+        playback: null,
+        reward: null,
+        cleanup: null,
+        disconnects: new Map(),
+      },
+    };
+    this.rooms.set(roomCode, room);
+    this.addSystemMessage(room, `${nickname}님이 방을 만들었습니다.`);
+    this.options.logger.info("room_created", {
+      room: maskRoomCode(roomCode),
+      player: maskPlayerId(player.playerId),
+      phase: room.phase,
+    });
+    this.emit({ type: "ROOM_UPDATED", roomCode });
+    return {
+      credentials: this.credentials(room, player),
+      view: createPlayerView(room, player.playerId),
+    };
+  }
+
+  joinRoom(
+    roomCodeInput: string,
+    nicknameInput: string,
+    socketId: string,
+  ): RoomIdentityResult {
+    const room = this.getRoomOrThrow(roomCodeInput);
+    const nickname = this.normalizeNickname(nicknameInput);
+    if (room.phase !== "LOBBY") throw new RoomError("GAME_ALREADY_STARTED");
+    if (room.players.length >= MAX_ROOM_PLAYERS) throw new RoomError("ROOM_FULL");
+    if (room.players.some((player) =>
+      player.nickname.toLocaleLowerCase() === nickname.toLocaleLowerCase()
+    )) {
+      throw new RoomError("NICKNAME_ALREADY_USED");
+    }
+    const player = this.createPlayer(
+      nickname,
+      socketId,
+      this.nextSeatNumber(room.players),
+    );
+    room.players.push(player);
+    this.addSystemMessage(room, `${nickname}님이 참가했습니다.`);
+    this.touch(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+    return {
+      credentials: this.credentials(room, player),
+      view: createPlayerView(room, player.playerId),
+    };
+  }
+
+  reconnectRoom(
+    credentials: SessionCredentials,
+    socketId: string,
+  ): RoomIdentityResult {
+    const room = this.rooms.get(credentials.roomCode.toUpperCase());
+    if (!room) throw new RoomError("ROOM_SESSION_EXPIRED");
+    const player = room.players.find(
+      (candidate) => candidate.playerId === credentials.playerId,
+    );
+    if (!player) throw new RoomError("PLAYER_NOT_FOUND");
+    if (player.reconnectToken !== credentials.reconnectToken) {
+      throw new RoomError("INVALID_RECONNECT_TOKEN");
+    }
+    player.socketId = socketId;
+    player.connected = true;
+    this.clearDisconnectTimer(room, player.playerId);
+    if (room.timers.cleanup) {
+      clearTimeout(room.timers.cleanup);
+      room.timers.cleanup = null;
+    }
+    this.scheduleDisconnectedLobbyPlayers(room);
+    this.addSystemMessage(room, `${player.nickname}님이 재접속했습니다.`);
+    this.touch(room);
+    this.emit({
+      type: "PLAYER_RECONNECTED",
+      roomCode: room.roomCode,
+      playerId: player.playerId,
+    });
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+    return {
+      credentials: this.credentials(room, player),
+      view: createPlayerView(room, player.playerId),
+    };
+  }
+
+  selectCharacter(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    characterId: CharacterClassId,
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    const player = this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "LOBBY") throw new RoomError("INVALID_GAME_PHASE");
+    player.characterId = characterId;
+    player.ready = false;
+    this.touch(room);
+    this.emit({
+      type: "CHARACTER_SELECTED",
+      roomCode: room.roomCode,
+      playerId,
+      characterId,
+    });
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  setReady(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    ready: boolean,
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    const player = this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "LOBBY") throw new RoomError("INVALID_GAME_PHASE");
+    if (ready && !player.characterId) throw new RoomError("CHARACTER_NOT_SELECTED");
+    player.ready = ready;
+    this.touch(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  startGame(roomCode: string, playerId: string, socketId: string): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.hostPlayerId !== playerId) throw new RoomError("NOT_ROOM_HOST");
+    if (room.phase !== "LOBBY") throw new RoomError("GAME_ALREADY_STARTED");
+    if (room.players.length < MIN_GAME_PLAYERS) {
+      throw new RoomError("NOT_ENOUGH_PLAYERS");
+    }
+    if (room.players.some((player) => !player.characterId)) {
+      throw new RoomError("CHARACTER_NOT_SELECTED");
+    }
+    if (room.players.some((player) => !player.connected || !player.ready)) {
+      throw new RoomError("NOT_ALL_PLAYERS_READY");
+    }
+
+    room.game = new GameSession(this.options.randomSourceFactory);
+    room.fatalError = null;
+    room.lockedCardCounts.clear();
+    const state = room.game.start(room.players.map((player) => ({
+      id: player.playerId,
+      nickname: player.nickname,
+      seatNumber: player.seatNumber,
+      characterId: player.characterId!,
+    })));
+    room.phase = state.phase;
+    if (state.phase === "SELECTING_CARDS") {
+      this.scheduleActionTimer(room, state.roundNumber);
+    }
+    this.addSystemMessage(room, "게임이 시작되었습니다.");
+    this.touch(room);
+    this.emit({
+      type: "GAME_STARTED",
+      roomCode: room.roomCode,
+      roundNumber: state.roundNumber,
+    });
+    if (state.phase === "SELECTING_CARDS") this.emitSubmissionStatus(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  selectInitialHand(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    selectedInstanceIds: string[],
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "ROUND_STARTING" || !room.game) {
+      throw new RoomError("INVALID_GAME_PHASE");
+    }
+    room.game.selectInitialHand(playerId, selectedInstanceIds);
+    const state = room.game.getState();
+    if (state.phase === "SELECTING_CARDS") {
+      room.phase = "SELECTING_CARDS";
+      this.scheduleActionTimer(room, state.roundNumber);
+      this.emit({
+        type: "NEXT_ROUND",
+        roomCode: room.roomCode,
+        roundNumber: state.roundNumber,
+        actionDeadlineAt: room.actionDeadlineAt!,
+      });
+      this.emitSubmissionStatus(room);
+    }
+    this.touch(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  queueCard(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    roundNumber: number,
+    input: Omit<QueuedCardAction, "order">,
+  ): void {
+    const room = this.requireSelectingRoom(roomCode, playerId, socketId);
+    room.game!.queue(playerId, roundNumber, input);
+    this.emitQueueUpdated(room, playerId);
+  }
+
+  removeQueuedCard(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    roundNumber: number,
+    cardInstanceId: string,
+  ): void {
+    const room = this.requireSelectingRoom(roomCode, playerId, socketId);
+    room.game!.removeQueued(playerId, roundNumber, cardInstanceId);
+    this.emitQueueUpdated(room, playerId);
+  }
+
+  reorderQueuedCards(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    roundNumber: number,
+    orderedInstanceIds: string[],
+  ): void {
+    const room = this.requireSelectingRoom(roomCode, playerId, socketId);
+    room.game!.reorderQueued(playerId, roundNumber, orderedInstanceIds);
+    this.emitQueueUpdated(room, playerId);
+  }
+
+  confirmRound(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    roundNumber: number,
+  ): void {
+    const room = this.requireSelectingRoom(roomCode, playerId, socketId);
+    room.game!.confirm(playerId, roundNumber);
+    this.touch(room);
+    this.emitSubmissionStatus(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+    if (room.game!.haveAllAlivePlayersConfirmed()) {
+      this.resolveRoomRound(room, roundNumber);
+    }
+  }
+
+  eventsFinished(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    roundNumber: number,
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "RESOLVING_ROUND" || !room.game) {
+      throw new RoomError("INVALID_GAME_PHASE");
+    }
+    room.game.markEventsFinished(playerId, roundNumber);
+    const connectedIds = room.players
+      .filter((player) => player.connected)
+      .map((player) => player.playerId);
+    if (room.game.havePlayersFinishedEvents(connectedIds)) {
+      this.advanceAfterPlayback(room, roundNumber);
+    }
+  }
+
+  selectReward(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    cardId: string,
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "SELECTING_REWARD" || !room.game) {
+      throw new RoomError("INVALID_GAME_PHASE");
+    }
+    const before = this.playerDeckSize(room, playerId);
+    room.game.chooseReward(playerId, cardId);
+    this.emit({ type: "REWARD_SELECTED", roomCode: room.roomCode, playerId });
+    const after = this.playerDeckSize(room, playerId);
+    if (after !== before) {
+      this.emit({ type: "DECK_UPDATED", roomCode: room.roomCode, playerId, deckSize: after });
+    }
+    this.afterRewardChoice(room);
+  }
+
+  selectDeckRemoval(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    cardInstanceId: string,
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "SELECTING_DECK_REMOVAL" || !room.game) {
+      throw new RoomError("INVALID_GAME_PHASE");
+    }
+    room.game.removeDeckCard(playerId, cardInstanceId);
+    this.emit({
+      type: "DECK_UPDATED",
+      roomCode: room.roomCode,
+      playerId,
+      deckSize: this.playerDeckSize(room, playerId),
+    });
+    this.afterDeckRemoval(room);
+  }
+
+  sendChat(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    rawMessage: string,
+  ): ChatMessage {
+    const room = this.getRoomOrThrow(roomCode);
+    const player = this.assertOwnership(room, playerId, socketId);
+    const message = rawMessage.trim().replace(/\s+/g, " ");
+    if (!message) throw new RoomError("CHAT_EMPTY");
+    if (message.length > CHAT_MESSAGE_MAX_LENGTH) {
+      throw new RoomError("CHAT_MESSAGE_TOO_LONG");
+    }
+    const gamePlayer = room.game?.getState().players.find(
+      (candidate) => candidate.id === playerId,
+    );
+    if (gamePlayer && !gamePlayer.alive) throw new RoomError("CHAT_DEAD_PLAYER");
+
+    const now = this.options.now();
+    const recent = (room.chatRateLimits.get(playerId) ?? []).filter(
+      (timestamp) => now - timestamp < CHAT_RATE_WINDOW_MS,
+    );
+    if (recent.length >= CHAT_RATE_MAX_MESSAGES) {
+      throw new RoomError("CHAT_RATE_LIMITED");
+    }
+    recent.push(now);
+    room.chatRateLimits.set(playerId, recent);
+    const chatMessage = this.appendChatMessage(room, {
+      playerId,
+      nickname: player.nickname,
+      message,
+      kind: "PLAYER",
+    });
+    this.touch(room);
+    return chatMessage;
+  }
+
+  requestRematch(roomCode: string, playerId: string, socketId: string): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.hostPlayerId !== playerId) throw new RoomError("NOT_ROOM_HOST");
+    if (room.phase !== "FINISHED") throw new RoomError("INVALID_GAME_PHASE");
+    this.clearGameTimers(room);
+    room.game = null;
+    room.phase = "LOBBY";
+    room.actionDeadlineAt = null;
+    room.rewardDeadlineAt = null;
+    room.lockedCardCounts.clear();
+    room.chatRateLimits.clear();
+    room.fatalError = null;
+    room.players = room.players.filter((player) => player.connected);
+    for (const player of room.players) {
+      player.ready = false;
+      player.characterId = null;
+    }
+    this.addSystemMessage(room, "재경기를 준비합니다. 캐릭터를 다시 선택해 주세요.");
+    this.touch(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  handleActionTimeout(roomCode: string, roundNumber: number): void {
+    const room = this.rooms.get(roomCode.toUpperCase());
+    if (!room || room.phase !== "SELECTING_CARDS") return;
+    this.resolveRoomRound(room, roundNumber);
+  }
+
+  handleRewardTimeout(roomCode: string): void {
+    const room = this.rooms.get(roomCode.toUpperCase());
+    if (!room?.game) return;
+    if (room.phase === "SELECTING_REWARD") {
+      room.game.chooseRandomRewards();
+      for (const player of room.game.getState().players.filter((candidate) => candidate.alive)) {
+        this.emit({
+          type: "DECK_UPDATED",
+          roomCode: room.roomCode,
+          playerId: player.id,
+          deckSize: getDeckSize(player.deckState),
+        });
+      }
+      this.afterRewardChoice(room);
+      return;
+    }
+    if (room.phase === "SELECTING_DECK_REMOVAL") {
+      room.game.removeAutomaticDeckCards();
+      for (const player of room.game.getState().players.filter((candidate) => candidate.alive)) {
+        this.emit({
+          type: "DECK_UPDATED",
+          roomCode: room.roomCode,
+          playerId: player.id,
+          deckSize: getDeckSize(player.deckState),
+        });
+      }
+      this.afterDeckRemoval(room);
+    }
+  }
+
+  leaveRoom(roomCode: string, playerId: string, socketId: string): void {
+    const room = this.getRoomOrThrow(roomCode);
+    const player = this.assertOwnership(room, playerId, socketId);
+    this.addSystemMessage(room, `${player.nickname}님이 나갔습니다.`);
+    if (room.phase === "LOBBY") {
+      this.removePlayer(room, player.playerId);
+      return;
+    }
+    player.connected = false;
+    player.socketId = null;
+    this.transferHost(room);
+    this.scheduleRoomCleanupIfEmpty(room);
+    this.touch(room);
+    this.emit({ type: "PLAYER_DISCONNECTED", roomCode: room.roomCode, playerId });
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  disconnectSocket(socketId: string): void {
+    for (const room of this.rooms.values()) {
+      const player = room.players.find((candidate) => candidate.socketId === socketId);
+      if (!player) continue;
+      player.connected = false;
+      player.socketId = null;
+      this.transferHost(room);
+      this.scheduleRoomCleanupIfEmpty(room);
+      if (room.players.some((candidate) => candidate.connected)) {
+        this.scheduleDisconnectedLobbyPlayers(room);
+      }
+      this.addSystemMessage(room, `${player.nickname}님의 연결이 끊겼습니다.`);
+      this.touch(room);
+      this.emit({
+        type: "PLAYER_DISCONNECTED",
+        roomCode: room.roomCode,
+        playerId: player.playerId,
+      });
+      this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+      return;
+    }
+  }
+
+  getRoom(roomCode: string): RoomState | undefined {
+    return this.rooms.get(roomCode.toUpperCase());
+  }
+
+  getPlayerView(roomCode: string, playerId: string): PlayerGameView {
+    return createPlayerView(this.getRoomOrThrow(roomCode), playerId);
+  }
+
+  getRoomCount(): number {
+    return this.rooms.size;
+  }
+
+  getConnectedPlayerCount(): number {
+    let connected = 0;
+    for (const room of this.rooms.values()) {
+      connected += room.players.filter((player) => player.connected).length;
+    }
+    return connected;
+  }
+
+  destroy(): void {
+    for (const room of [...this.rooms.values()]) this.deleteRoom(room);
+    this.listeners.clear();
   }
 
   private emit(event: RoomManagerEvent): void {
@@ -145,6 +658,7 @@ export class RoomManager {
       socketId,
       nickname,
       seatNumber,
+      characterId: null,
       connected: true,
       ready: false,
     };
@@ -156,323 +670,6 @@ export class RoomManager {
       playerId: player.playerId,
       reconnectToken: player.reconnectToken,
     };
-  }
-
-  createRoom(nicknameInput: string, socketId: string): RoomIdentityResult {
-    const nickname = this.normalizeNickname(nicknameInput);
-    const roomCode = this.uniqueRoomCode();
-    const player = this.createPlayer(nickname, socketId, 1);
-    const now = this.options.now();
-    const room: RoomState = {
-      roomCode,
-      hostPlayerId: player.playerId,
-      phase: "LOBBY",
-      players: [player],
-      game: null,
-      actionDeadlineAt: null,
-      fatalError: null,
-      createdAt: now,
-      updatedAt: now,
-      timers: {
-        action: null,
-        nextTurn: null,
-        cleanup: null,
-        disconnects: new Map(),
-      },
-    };
-    this.rooms.set(roomCode, room);
-    this.options.logger.info("room_created", {
-      room: maskRoomCode(roomCode),
-      player: maskPlayerId(player.playerId),
-      phase: room.phase,
-    });
-    this.emit({ type: "ROOM_UPDATED", roomCode });
-    return {
-      credentials: this.credentials(room, player),
-      view: createPlayerView(room, player.playerId),
-    };
-  }
-
-  joinRoom(
-    roomCodeInput: string,
-    nicknameInput: string,
-    socketId: string,
-  ): RoomIdentityResult {
-    const room = this.getRoomOrThrow(roomCodeInput);
-    const nickname = this.normalizeNickname(nicknameInput);
-    if (room.phase !== "LOBBY") throw new RoomError("GAME_ALREADY_STARTED");
-    if (room.players.length >= MAX_ROOM_PLAYERS) throw new RoomError("ROOM_FULL");
-    if (
-      room.players.some(
-        (player) =>
-          player.nickname.toLocaleLowerCase() === nickname.toLocaleLowerCase(),
-      )
-    ) {
-      throw new RoomError("NICKNAME_ALREADY_USED");
-    }
-    const player = this.createPlayer(
-      nickname,
-      socketId,
-      this.nextSeatNumber(room.players),
-    );
-    room.players.push(player);
-    this.touch(room);
-    this.options.logger.info("room_joined", {
-      room: maskRoomCode(room.roomCode),
-      player: maskPlayerId(player.playerId),
-      phase: room.phase,
-      playerCount: room.players.length,
-    });
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-    return {
-      credentials: this.credentials(room, player),
-      view: createPlayerView(room, player.playerId),
-    };
-  }
-
-  reconnectRoom(
-    credentials: SessionCredentials,
-    socketId: string,
-  ): RoomIdentityResult {
-    const room = this.rooms.get(credentials.roomCode.toUpperCase());
-    if (!room) throw new RoomError("ROOM_SESSION_EXPIRED");
-    const player = room.players.find(
-      (candidate) => candidate.playerId === credentials.playerId,
-    );
-    if (!player) throw new RoomError("PLAYER_NOT_FOUND");
-    if (player.reconnectToken !== credentials.reconnectToken) {
-      throw new RoomError("INVALID_RECONNECT_TOKEN");
-    }
-    player.socketId = socketId;
-    player.connected = true;
-    this.clearDisconnectTimer(room, player.playerId);
-    if (room.timers.cleanup) {
-      clearTimeout(room.timers.cleanup);
-      room.timers.cleanup = null;
-    }
-    this.scheduleDisconnectedLobbyPlayers(room);
-    this.touch(room);
-    this.options.logger.info("player_reconnected", {
-      room: maskRoomCode(room.roomCode),
-      player: maskPlayerId(player.playerId),
-      phase: room.phase,
-    });
-    this.emit({
-      type: "PLAYER_RECONNECTED",
-      roomCode: room.roomCode,
-      playerId: player.playerId,
-    });
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-    return {
-      credentials: this.credentials(room, player),
-      view: createPlayerView(room, player.playerId),
-    };
-  }
-
-  setReady(
-    roomCode: string,
-    playerId: string,
-    socketId: string,
-    ready: boolean,
-  ): void {
-    const room = this.getRoomOrThrow(roomCode);
-    const player = this.assertOwnership(room, playerId, socketId);
-    if (room.phase !== "LOBBY") throw new RoomError("INVALID_GAME_PHASE");
-    player.ready = ready;
-    this.touch(room);
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-  }
-
-  startGame(roomCode: string, playerId: string, socketId: string): void {
-    const room = this.getRoomOrThrow(roomCode);
-    this.assertOwnership(room, playerId, socketId);
-    if (room.hostPlayerId !== playerId) throw new RoomError("NOT_ROOM_HOST");
-    if (room.phase !== "LOBBY") throw new RoomError("GAME_ALREADY_STARTED");
-    if (room.players.length < MIN_GAME_PLAYERS) {
-      throw new RoomError("NOT_ENOUGH_PLAYERS");
-    }
-    if (room.players.some((player) => !player.connected || !player.ready)) {
-      throw new RoomError("NOT_ALL_PLAYERS_READY");
-    }
-
-    room.game = new GameSession(this.options.randomSourceFactory);
-    room.fatalError = null;
-    const state = room.game.start(
-      room.players.map((player) => ({
-        id: player.playerId,
-        nickname: player.nickname,
-        seatNumber: player.seatNumber,
-      })),
-    );
-    room.phase = "SELECTING_ACTION";
-    this.scheduleActionTimer(room, state.turnNumber);
-    this.touch(room);
-    this.options.logger.info("game_started", {
-      room: maskRoomCode(room.roomCode),
-      player: maskPlayerId(playerId),
-      phase: room.phase,
-      turnNumber: state.turnNumber,
-    });
-    this.options.logger.info("turn_started", {
-      room: maskRoomCode(room.roomCode),
-      turnNumber: state.turnNumber,
-    });
-    this.emit({
-      type: "GAME_STARTED",
-      roomCode: room.roomCode,
-      turnNumber: state.turnNumber,
-      actionDeadlineAt: room.actionDeadlineAt!,
-    });
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-  }
-
-  submitAction(
-    roomCode: string,
-    playerId: string,
-    socketId: string,
-    turnNumber: number,
-    action: PlayerAction,
-  ): void {
-    const room = this.getRoomOrThrow(roomCode);
-    this.assertOwnership(room, playerId, socketId);
-    if (room.phase !== "SELECTING_ACTION" || !room.game) {
-      throw new RoomError("INVALID_GAME_PHASE");
-    }
-    room.game.submit(playerId, turnNumber, action);
-    this.touch(room);
-    this.emitSubmissionStatus(room);
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-    if (room.game.haveAllAlivePlayersSubmitted()) {
-      this.resolveRoomTurn(room, turnNumber);
-    }
-  }
-
-  eventsFinished(
-    roomCode: string,
-    playerId: string,
-    socketId: string,
-    turnNumber: number,
-  ): void {
-    const room = this.getRoomOrThrow(roomCode);
-    this.assertOwnership(room, playerId, socketId);
-    if (room.phase !== "RESOLVING" || !room.game) {
-      throw new RoomError("INVALID_GAME_PHASE");
-    }
-    room.game.markEventsFinished(playerId, turnNumber);
-    const aliveConnectedIds = room.players
-      .filter((session) => {
-        const gamePlayer = room.game!.getState().players.find(
-          (candidate) => candidate.id === session.playerId,
-        );
-        return session.connected && gamePlayer?.alive;
-      })
-      .map((session) => session.playerId);
-    if (room.game.havePlayersFinishedEvents(aliveConnectedIds)) {
-      this.startNextTurn(room, turnNumber);
-    }
-  }
-
-  requestRematch(roomCode: string, playerId: string, socketId: string): void {
-    const room = this.getRoomOrThrow(roomCode);
-    this.assertOwnership(room, playerId, socketId);
-    if (room.hostPlayerId !== playerId) throw new RoomError("NOT_ROOM_HOST");
-    if (room.phase !== "FINISHED") throw new RoomError("INVALID_GAME_PHASE");
-    this.clearGameTimers(room);
-    room.game = null;
-    room.phase = "LOBBY";
-    room.actionDeadlineAt = null;
-    room.fatalError = null;
-    room.players = room.players.filter((player) => player.connected);
-    room.players.forEach((player) => {
-      player.ready = false;
-    });
-    this.touch(room);
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-  }
-
-  handleActionTimeout(roomCode: string, turnNumber: number): void {
-    const room = this.rooms.get(roomCode.toUpperCase());
-    if (!room || room.phase !== "SELECTING_ACTION") return;
-    this.resolveRoomTurn(room, turnNumber);
-  }
-
-  leaveRoom(roomCode: string, playerId: string, socketId: string): void {
-    const room = this.getRoomOrThrow(roomCode);
-    const player = this.assertOwnership(room, playerId, socketId);
-    if (room.phase === "LOBBY") {
-      this.removePlayer(room, player.playerId);
-    } else {
-      player.connected = false;
-      player.socketId = null;
-      this.transferHost(room);
-      this.scheduleRoomCleanupIfEmpty(room);
-      this.touch(room);
-      this.options.logger.info("player_disconnected", {
-        room: maskRoomCode(room.roomCode),
-        player: maskPlayerId(player.playerId),
-        phase: room.phase,
-        reason: "leave",
-      });
-      this.emit({
-        type: "PLAYER_DISCONNECTED",
-        roomCode: room.roomCode,
-        playerId: player.playerId,
-      });
-      this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-    }
-  }
-
-  disconnectSocket(socketId: string): void {
-    for (const room of this.rooms.values()) {
-      const player = room.players.find((candidate) => candidate.socketId === socketId);
-      if (!player) continue;
-      player.connected = false;
-      player.socketId = null;
-      this.transferHost(room);
-      this.scheduleRoomCleanupIfEmpty(room);
-      if (room.players.some((candidate) => candidate.connected)) {
-        this.scheduleDisconnectedLobbyPlayers(room);
-      }
-      this.touch(room);
-      this.options.logger.info("player_disconnected", {
-        room: maskRoomCode(room.roomCode),
-        player: maskPlayerId(player.playerId),
-        phase: room.phase,
-        reason: "transport",
-      });
-      this.emit({
-        type: "PLAYER_DISCONNECTED",
-        roomCode: room.roomCode,
-        playerId: player.playerId,
-      });
-      this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-      return;
-    }
-  }
-
-  getRoom(roomCode: string): RoomState | undefined {
-    return this.rooms.get(roomCode.toUpperCase());
-  }
-
-  getPlayerView(roomCode: string, playerId: string): PlayerGameView {
-    return createPlayerView(this.getRoomOrThrow(roomCode), playerId);
-  }
-
-  getRoomCount(): number {
-    return this.rooms.size;
-  }
-
-  getConnectedPlayerCount(): number {
-    let connectedPlayers = 0;
-    for (const room of this.rooms.values()) {
-      connectedPlayers += room.players.filter((player) => player.connected).length;
-    }
-    return connectedPlayers;
-  }
-
-  destroy(): void {
-    for (const room of [...this.rooms.values()]) this.deleteRoom(room);
-    this.listeners.clear();
   }
 
   private getRoomOrThrow(roomCode: string): RoomState {
@@ -494,106 +691,236 @@ export class RoomManager {
     return player;
   }
 
-  private scheduleActionTimer(room: RoomState, turnNumber: number): void {
-    if (room.timers.action) clearTimeout(room.timers.action);
-    room.actionDeadlineAt = this.options.now() + this.options.actionTimeoutMs;
-    room.timers.action = setTimeout(
-      () =>
-        this.runRoomTimer(room, "action_timeout", () =>
-          this.handleActionTimeout(room.roomCode, turnNumber),
-        ),
-      this.options.actionTimeoutMs,
-    );
+  private requireSelectingRoom(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+  ): RoomState {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "SELECTING_CARDS" || !room.game) {
+      throw new RoomError("INVALID_GAME_PHASE");
+    }
+    return room;
   }
 
-  private resolveRoomTurn(room: RoomState, turnNumber: number): void {
-    if (!room.game) return;
-    let payload: TurnResolvedPayload | null;
-    try {
-      payload = room.game.resolveCurrentTurn(turnNumber);
-    } catch (error) {
-      this.finishGameWithError(room, turnNumber, error);
-      return;
-    }
-    if (!payload) return;
-    if (room.timers.action) {
-      clearTimeout(room.timers.action);
-      room.timers.action = null;
-    }
-    room.actionDeadlineAt = null;
-    room.phase = payload.publicState.result ? "FINISHED" : "RESOLVING";
+  private emitQueueUpdated(room: RoomState, playerId: string): void {
+    const player = room.game!.getState().players.find((candidate) => candidate.id === playerId);
     this.touch(room);
-    this.emit({ type: "TURN_RESOLVING", roomCode: room.roomCode, turnNumber });
-    this.emit({ type: "TURN_RESOLVED", roomCode: room.roomCode, payload });
-    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
-    this.options.logger.info("turn_resolved", {
-      room: maskRoomCode(room.roomCode),
-      phase: room.phase,
-      turnNumber,
-      finished: Boolean(payload.publicState.result),
-    });
-    if (payload.publicState.result) {
-      this.options.logger.info("game_finished", {
-        room: maskRoomCode(room.roomCode),
-        turnNumber: payload.turnNumber,
-        resultType: payload.publicState.result.type,
-      });
-      this.emit({
-        type: "GAME_FINISHED",
-        roomCode: room.roomCode,
-        result: payload.publicState.result,
-        totalTurns: payload.turnNumber,
-      });
-      return;
-    }
-    room.timers.nextTurn = setTimeout(
-      () =>
-        this.runRoomTimer(room, "next_turn", () =>
-          this.startNextTurn(room, turnNumber),
-        ),
-      this.options.eventsFinishTimeoutMs,
-    );
-  }
-
-  private startNextTurn(room: RoomState, resolvedTurnNumber: number): void {
-    if (
-      room.phase !== "RESOLVING" ||
-      !room.game ||
-      room.game.getLastResolvedTurn() !== resolvedTurnNumber
-    ) {
-      return;
-    }
-    if (room.timers.nextTurn) {
-      clearTimeout(room.timers.nextTurn);
-      room.timers.nextTurn = null;
-    }
-    const state = room.game.startNextTurn();
-    room.phase = "SELECTING_ACTION";
-    this.scheduleActionTimer(room, state.turnNumber);
-    this.touch(room);
-    this.options.logger.info("turn_started", {
-      room: maskRoomCode(room.roomCode),
-      turnNumber: state.turnNumber,
-    });
     this.emit({
-      type: "NEXT_TURN",
+      type: "QUEUE_UPDATED",
       roomCode: room.roomCode,
-      turnNumber: state.turnNumber,
-      actionDeadlineAt: room.actionDeadlineAt!,
+      playerId,
+      queuedCards: player?.deckState.queuedCards.map((queued) => ({ ...queued })) ?? [],
     });
-    this.emitSubmissionStatus(room);
     this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
   }
 
   private emitSubmissionStatus(room: RoomState): void {
     if (!room.game) return;
     this.emit({
-      type: "SUBMISSION_STATUS",
+      type: "ROUND_SUBMISSION_STATUS",
       roomCode: room.roomCode,
       payload: {
-        turnNumber: room.game.getState().turnNumber,
-        submittedPlayerIds: room.game.getSubmittedPlayerIds(),
+        roundNumber: room.game.getState().roundNumber,
+        confirmedPlayerIds: room.game.getConfirmedPlayerIds(),
       },
+    });
+  }
+
+  private scheduleActionTimer(room: RoomState, roundNumber: number): void {
+    if (room.timers.action) clearTimeout(room.timers.action);
+    room.actionDeadlineAt = this.options.now() + this.options.actionTimeoutMs;
+    room.timers.action = setTimeout(
+      () => this.runRoomTimer(room, "action_timeout", () =>
+        this.handleActionTimeout(room.roomCode, roundNumber)),
+      this.options.actionTimeoutMs,
+    );
+  }
+
+  private resolveRoomRound(room: RoomState, roundNumber: number): void {
+    if (!room.game || room.phase !== "SELECTING_CARDS") return;
+    const stateBefore = room.game.getState();
+    if (stateBefore.roundNumber !== roundNumber) return;
+    const cardCounts = stateBefore.players
+      .filter((player) => player.alive)
+      .map((player) => ({
+        playerId: player.id,
+        count: player.deckState.queuedCards.length,
+      }));
+    room.lockedCardCounts = new Map(
+      cardCounts.map(({ playerId, count }) => [playerId, count]),
+    );
+    let payload: RoundResolvedPayload | null;
+    try {
+      payload = room.game.resolveCurrentRound(roundNumber);
+    } catch (error) {
+      this.finishGameWithError(room, roundNumber, error);
+      return;
+    }
+    if (!payload) return;
+    if (room.timers.action) clearTimeout(room.timers.action);
+    room.timers.action = null;
+    room.actionDeadlineAt = null;
+    room.phase = "RESOLVING_ROUND";
+    this.touch(room);
+    this.emit({ type: "ROUND_LOCKED", roomCode: room.roomCode, roundNumber });
+    this.emit({
+      type: "CARD_COUNTS_REVEALED",
+      roomCode: room.roomCode,
+      roundNumber,
+      cardCounts,
+    });
+    this.emit({ type: "ROUND_RESOLVING", roomCode: room.roomCode, roundNumber });
+    this.emit({ type: "ROUND_RESOLVED", roomCode: room.roomCode, payload });
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+    room.timers.playback = setTimeout(
+      () => this.runRoomTimer(room, "playback_timeout", () =>
+        this.advanceAfterPlayback(room, roundNumber)),
+      this.options.eventsFinishTimeoutMs,
+    );
+  }
+
+  private advanceAfterPlayback(room: RoomState, resolvedRound: number): void {
+    if (
+      room.phase !== "RESOLVING_ROUND"
+      || !room.game
+      || room.game.getLastResolvedRound() !== resolvedRound
+    ) return;
+    if (room.timers.playback) clearTimeout(room.timers.playback);
+    room.timers.playback = null;
+    const state = room.game.getState();
+    if (state.phase === "FINISHED" && state.result) {
+      room.phase = "FINISHED";
+      this.addSystemMessage(room, "게임이 종료되었습니다.");
+      this.emit({
+        type: "GAME_FINISHED",
+        roomCode: room.roomCode,
+        result: state.result,
+        totalRounds: state.roundNumber,
+      });
+    } else if (state.phase === "SELECTING_REWARD") {
+      room.phase = "SELECTING_REWARD";
+      this.scheduleRewardTimer(room);
+      this.emit({
+        type: "REWARD_OPTIONS",
+        roomCode: room.roomCode,
+        deadlineAt: room.rewardDeadlineAt!,
+      });
+    } else if (state.phase === "ROUND_STARTING") {
+      this.startNextRound(room);
+      return;
+    } else {
+      this.finishGameWithError(room, resolvedRound, new Error(`Unexpected phase: ${state.phase}`));
+      return;
+    }
+    this.touch(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  private scheduleRewardTimer(room: RoomState): void {
+    if (room.timers.reward) clearTimeout(room.timers.reward);
+    room.rewardDeadlineAt = this.options.now() + this.options.rewardTimeoutMs;
+    room.timers.reward = setTimeout(
+      () => this.runRoomTimer(room, "reward_timeout", () =>
+        this.handleRewardTimeout(room.roomCode)),
+      this.options.rewardTimeoutMs,
+    );
+  }
+
+  private afterRewardChoice(room: RoomState): void {
+    const phase = room.game!.getState().phase;
+    if (phase === "SELECTING_REWARD") {
+      this.touch(room);
+      this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+      return;
+    }
+    if (room.timers.reward) clearTimeout(room.timers.reward);
+    room.timers.reward = null;
+    if (phase === "SELECTING_DECK_REMOVAL") {
+      room.phase = "SELECTING_DECK_REMOVAL";
+      this.scheduleRewardTimer(room);
+      this.emit({
+        type: "DECK_REMOVAL_REQUIRED",
+        roomCode: room.roomCode,
+        deadlineAt: room.rewardDeadlineAt!,
+      });
+      this.touch(room);
+      this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+      return;
+    }
+    if (phase === "ROUND_STARTING") {
+      room.rewardDeadlineAt = null;
+      this.startNextRound(room);
+      return;
+    }
+    this.finishGameWithError(room, room.game!.getState().roundNumber, new Error(`Unexpected reward phase: ${phase}`));
+  }
+
+  private afterDeckRemoval(room: RoomState): void {
+    const phase = room.game!.getState().phase;
+    if (phase === "SELECTING_DECK_REMOVAL") {
+      this.touch(room);
+      this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+      return;
+    }
+    if (phase === "ROUND_STARTING") {
+      if (room.timers.reward) clearTimeout(room.timers.reward);
+      room.timers.reward = null;
+      room.rewardDeadlineAt = null;
+      this.startNextRound(room);
+      return;
+    }
+    this.finishGameWithError(room, room.game!.getState().roundNumber, new Error(`Unexpected removal phase: ${phase}`));
+  }
+
+  private startNextRound(room: RoomState): void {
+    const state = room.game!.startNextRound();
+    room.phase = "SELECTING_CARDS";
+    room.lockedCardCounts.clear();
+    room.rewardDeadlineAt = null;
+    this.scheduleActionTimer(room, state.roundNumber);
+    this.touch(room);
+    this.emit({
+      type: "NEXT_ROUND",
+      roomCode: room.roomCode,
+      roundNumber: state.roundNumber,
+      actionDeadlineAt: room.actionDeadlineAt!,
+    });
+    this.emitSubmissionStatus(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  private playerDeckSize(room: RoomState, playerId: string): number {
+    const player = room.game!.getState().players.find((candidate) => candidate.id === playerId);
+    if (!player) throw new RoomError("PLAYER_NOT_FOUND");
+    return getDeckSize(player.deckState);
+  }
+
+  private appendChatMessage(
+    room: RoomState,
+    input: Pick<ChatMessage, "playerId" | "nickname" | "message" | "kind">,
+  ): ChatMessage {
+    const message: ChatMessage = {
+      id: `${room.roomCode}:${room.nextChatMessageNumber++}`,
+      roomCode: room.roomCode,
+      createdAt: this.options.now(),
+      ...input,
+    };
+    room.chatMessages.push(message);
+    if (room.chatMessages.length > CHAT_HISTORY_LIMIT) {
+      room.chatMessages.splice(0, room.chatMessages.length - CHAT_HISTORY_LIMIT);
+    }
+    this.emit({ type: "CHAT_MESSAGE", roomCode: room.roomCode, message });
+    return message;
+  }
+
+  private addSystemMessage(room: RoomState, message: string): ChatMessage {
+    return this.appendChatMessage(room, {
+      playerId: null,
+      nickname: null,
+      message,
+      kind: "SYSTEM",
     });
   }
 
@@ -616,16 +943,11 @@ export class RoomManager {
     if (room.phase !== "LOBBY") return;
     for (const player of room.players) {
       if (player.connected || room.timers.disconnects.has(player.playerId)) continue;
-      room.timers.disconnects.set(
-        player.playerId,
-        setTimeout(
-          () =>
-            this.runRoomTimer(room, "disconnect_grace", () =>
-              this.removeDisconnectedLobbyPlayer(room.roomCode, player.playerId),
-            ),
-          this.options.disconnectGraceMs,
-        ),
-      );
+      room.timers.disconnects.set(player.playerId, setTimeout(
+        () => this.runRoomTimer(room, "disconnect_grace", () =>
+          this.removeDisconnectedLobbyPlayer(room.roomCode, player.playerId)),
+        this.options.disconnectGraceMs,
+      ));
     }
   }
 
@@ -654,22 +976,17 @@ export class RoomManager {
       this.clearDisconnectTimer(room, playerId);
     }
     room.timers.cleanup = setTimeout(
-      () =>
-        this.runRoomTimer(room, "abandoned_room_cleanup", () => {
-          const current = this.rooms.get(room.roomCode);
-          if (current && current.players.every((player) => !player.connected)) {
-            this.deleteRoom(current);
-          }
-        }),
+      () => this.runRoomTimer(room, "abandoned_room_cleanup", () => {
+        const current = this.rooms.get(room.roomCode);
+        if (current && current.players.every((player) => !player.connected)) {
+          this.deleteRoom(current);
+        }
+      }),
       this.options.abandonedRoomTtlMs,
     );
   }
 
-  private runRoomTimer(
-    room: RoomState,
-    timerType: string,
-    operation: () => void,
-  ): void {
+  private runRoomTimer(room: RoomState, timerType: string, operation: () => void): void {
     try {
       operation();
     } catch (error) {
@@ -680,44 +997,35 @@ export class RoomManager {
         error,
       });
       if (room.game && room.phase !== "FINISHED") {
-        this.finishGameWithError(
-          room,
-          room.game.getState().turnNumber,
-          error,
-        );
+        this.finishGameWithError(room, room.game.getState().roundNumber, error);
       }
     }
   }
 
-  private finishGameWithError(
-    room: RoomState,
-    turnNumber: number,
-    error: unknown,
-  ): void {
+  private finishGameWithError(room: RoomState, roundNumber: number, error: unknown): void {
     this.clearGameTimers(room);
     room.phase = "FINISHED";
     room.actionDeadlineAt = null;
+    room.rewardDeadlineAt = null;
     room.fatalError = new RoomError("GAME_ENGINE_FAILURE").toSocketError();
     this.touch(room);
     this.options.logger.error("game_engine_failed", {
       room: maskRoomCode(room.roomCode),
       phase: room.phase,
-      turnNumber,
+      roundNumber,
       error,
     });
-    this.emit({
-      type: "GAME_ERROR",
-      roomCode: room.roomCode,
-      error: room.fatalError,
-    });
+    this.emit({ type: "GAME_ERROR", roomCode: room.roomCode, error: room.fatalError });
     this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
   }
 
   private clearGameTimers(room: RoomState): void {
     if (room.timers.action) clearTimeout(room.timers.action);
-    if (room.timers.nextTurn) clearTimeout(room.timers.nextTurn);
+    if (room.timers.playback) clearTimeout(room.timers.playback);
+    if (room.timers.reward) clearTimeout(room.timers.reward);
     room.timers.action = null;
-    room.timers.nextTurn = null;
+    room.timers.playback = null;
+    room.timers.reward = null;
   }
 
   private deleteRoom(room: RoomState): void {

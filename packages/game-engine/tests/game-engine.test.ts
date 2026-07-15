@@ -1,492 +1,341 @@
 import { describe, expect, it } from "vitest";
 import {
-  CRITICAL_DAMAGE,
-  MAX_HP,
-  NORMAL_DAMAGE,
-  REDUCED_DAMAGE,
-  SeededRandomSource,
+  BASE_DECK_CARD_IDS,
+  CARD_CATALOG,
+  CHARACTER_CATALOG,
+  GUARDIAN_MAX_HP,
+  HP_SCALE,
+  MAX_DECK_SIZE,
   SequenceRandomSource,
+  SeededRandomSource,
+  chooseInitialHand,
+  confirmRound,
   createGame,
-  resolveTurn,
-  startTurn,
-  submitAction,
+  getAllDeckCards,
+  getDeckSize,
+  prepareRewardOptions,
+  queueCard,
+  removeQueuedCard,
+  reorderQueuedCards,
+  resolveRound,
+  selectDeckRemoval,
+  selectReward,
+  startRound,
+  type CharacterClassId,
   type GameState,
-  type PlayerAction,
+  type RandomSource,
 } from "../src";
 
-function makeGame(count = 3): GameState {
-  const names = ["A", "B", "C", "D", "E", "F"];
-  return createGame(
-    Array.from({ length: count }, (_, index) => ({
-      id: `p${index + 1}`,
-      nickname: names[index]!,
-      seatNumber: index + 1,
-    })),
-  );
+const hp = (value: number) => value * HP_SCALE;
+
+function players(classes: CharacterClassId[] = ["DUELIST", "BERSERKER"]) {
+  return classes.map((characterId, index) => ({
+    id: `p${index + 1}`,
+    nickname: `P${index + 1}`,
+    seatNumber: index + 1,
+    characterId,
+  }));
 }
 
-function beginTurn(
-  state: GameState,
-  speeds: number[],
-  hiddenTieRolls: number[] = [],
-): GameState {
-  return startTurn(
-    state,
-    new SequenceRandomSource(
-      { SPEED: speeds, HIDDEN_TIE: hiddenTieRolls },
-      new SeededRandomSource(41),
-    ),
-  );
+function selectingState(classes?: CharacterClassId[]): GameState {
+  const created = createGame(players(classes), new SeededRandomSource(10));
+  return startRound(created, new SeededRandomSource(11));
 }
 
-function submitAll(
+function setHand(state: GameState, playerId: string, cardIds: string[]): void {
+  const player = state.players.find((candidate) => candidate.id === playerId)!;
+  player.deckState.hand = cardIds.map((cardId, index) => ({
+    instanceId: `${playerId}:test:${index}:${cardId}`,
+    cardId,
+  }));
+  player.deckState.queuedCards = [];
+  player.deckState.confirmed = false;
+}
+
+function addQueue(
   state: GameState,
-  actions: Record<string, PlayerAction>,
+  playerId: string,
+  cardIndex: number,
+  targetPlayerId?: string,
 ): GameState {
-  let nextState = state;
-  for (const player of state.players.filter((candidate) => candidate.alive)) {
-    const action = actions[player.id];
-    if (!action) throw new Error(`Missing action for ${player.id}`);
-    nextState = submitAction(nextState, player.id, action);
+  const card = state.players.find((player) => player.id === playerId)!.deckState.hand[cardIndex]!;
+  return queueCard(state, playerId, state.roundNumber, {
+    cardInstanceId: card.instanceId,
+    ...(targetPlayerId ? { targetPlayerId } : {}),
+    additionalSelection: null,
+  });
+}
+
+function confirmAll(state: GameState): GameState {
+  let next = state;
+  for (const player of next.players.filter((candidate) => candidate.alive)) {
+    next = confirmRound(next, player.id, next.roundNumber);
   }
-  return nextState;
+  return next;
 }
 
-function playTurn(
+function resolved(
   state: GameState,
-  speeds: number[],
-  actions: Record<string, PlayerAction>,
-  combat: { clash?: number[]; evade?: number[] } = {},
+  random: RandomSource = new SeededRandomSource(20),
 ) {
-  const started = beginTurn(state, speeds);
-  const submitted = submitAll(started, actions);
-  return resolveTurn(
-    submitted,
-    new SequenceRandomSource(
-      { CLASH: combat.clash ?? [], EVADE: combat.evade ?? [] },
-      new SeededRandomSource(83),
-    ),
-  );
+  return resolveRound(confirmAll(state), random);
 }
 
-function player(state: GameState, id: string) {
-  return state.players.find((candidate) => candidate.id === id)!;
-}
-
-describe("game creation and initiative", () => {
-  it("stores the visible 30 HP as the scaled internal value 60", () => {
-    const state = makeGame(2);
-    expect(state.players.map((candidate) => candidate.hp)).toEqual([60, 60]);
-    expect(MAX_HP).toBe(60);
-  });
-
-  it("accepts only 2 to 6 players with unique ids and seats", () => {
-    expect(() => makeGame(1)).toThrow(/2 to 6/);
-    expect(() => makeGame(6)).not.toThrow();
-    expect(() =>
-      createGame([
-        { id: "same", nickname: "A", seatNumber: 1 },
-        { id: "same", nickname: "B", seatNumber: 2 },
-      ]),
-    ).toThrow(/Duplicate player id/);
-  });
-
-  it("rolls speed for alive players only", () => {
-    const initial = makeGame(3);
-    const withDeadPlayer: GameState = {
-      ...initial,
-      players: initial.players.map((candidate) =>
-        candidate.id === "p2"
-          ? { ...candidate, hp: 0, alive: false }
-          : candidate,
-      ),
-    };
-    const state = beginTurn(withDeadPlayer, [9, 4]);
-    expect(player(state, "p1").speedRoll).toBe(9);
-    expect(player(state, "p2").speedRoll).toBeNull();
-    expect(player(state, "p3").speedRoll).toBe(4);
-    expect(state.actionOrder).toEqual(["p1", "p3"]);
-  });
-
-  it("sorts higher speed first", () => {
-    const state = beginTurn(makeGame(4), [9, 7, 8, 1]);
-    expect(state.actionOrder).toEqual(["p1", "p3", "p2", "p4"]);
-  });
-
-  it("assigns non-duplicating hidden rolls inside a tied speed group", () => {
-    const state = beginTurn(makeGame(3), [7, 7, 7], [8, 2, 8]);
-    expect(player(state, "p1").hiddenTieRoll).toBe(8);
-    expect(player(state, "p2").hiddenTieRoll).toBe(2);
-    expect(player(state, "p3").hiddenTieRoll).toBe(10);
-    expect(new Set(state.players.map((candidate) => candidate.hiddenTieRoll)).size).toBe(3);
-    expect(state.actionOrder).toEqual(["p3", "p1", "p2"]);
-  });
-
-  it("assigns tie rolls by turn-start HP, nickname, then seat", () => {
-    const initial = makeGame(3);
-    const wounded: GameState = {
-      ...initial,
-      players: initial.players.map((candidate) => {
-        if (candidate.id === "p1") return { ...candidate, hp: 50, nickname: "Z" };
-        if (candidate.id === "p2") return { ...candidate, hp: 40, nickname: "Y" };
-        return { ...candidate, hp: 40, nickname: "A" };
-      }),
-    };
-    const state = beginTurn(wounded, [6, 6, 6], [1, 1, 1]);
-    expect(player(state, "p3").hiddenTieRoll).toBe(1);
-    expect(player(state, "p2").hiddenTieRoll).toBe(2);
-    expect(player(state, "p1").hiddenTieRoll).toBe(3);
-    expect(state.turnStartHp).toEqual({ p1: 50, p2: 40, p3: 40 });
-  });
-
-  it("does not mutate the state passed to startTurn or submitAction", () => {
-    const initial = makeGame(2);
-    const started = beginTurn(initial, [8, 2]);
-    const submitted = submitAction(started, "p1", {
-      type: "ATTACK",
-      targetPlayerId: "p2",
-    });
-    expect(initial.turnNumber).toBe(0);
-    expect(initial.players[0]!.speedRoll).toBeNull();
-    expect(started.players[0]!.selectedAction).toBeNull();
-    expect(submitted.players[0]!.selectedAction).toEqual({
-      type: "ATTACK",
-      targetPlayerId: "p2",
-    });
-  });
-});
-
-describe("action validation", () => {
-  it("allows PASS to consume a timeout action without changing combat state", () => {
-    const started = beginTurn(makeGame(2), [8, 4]);
-    const submitted = submitAll(started, {
-      p1: { type: "PASS" },
-      p2: { type: "PASS" },
-    });
-    const result = resolveTurn(submitted, new SeededRandomSource(1));
-    expect(result.state.players.map((candidate) => candidate.hp)).toEqual([
-      MAX_HP,
-      MAX_HP,
+describe("V2 catalogs and deck lifecycle", () => {
+  it("defines four characters, 27 cards, and the exact eight-card base deck", () => {
+    expect(Object.keys(CHARACTER_CATALOG)).toHaveLength(4);
+    expect(Object.keys(CARD_CATALOG)).toHaveLength(27);
+    expect(BASE_DECK_CARD_IDS).toEqual([
+      "BASE_QUICK_STRIKE",
+      "BASE_QUICK_STRIKE",
+      "BASE_HEAVY_STRIKE",
+      "BASE_HEAVY_STRIKE",
+      "BASE_GUARD",
+      "BASE_GUARD",
+      "BASE_EVADE",
+      "BASE_COUNTER",
     ]);
-    expect(result.events).toContainEqual({
-      type: "ACTION_STARTED",
-      playerId: "p1",
-      actionType: "PASS",
-    });
   });
 
-  it("rejects self-targeting and targeting a dead player", () => {
-    const initial = makeGame(3);
-    const withDeadPlayer: GameState = {
-      ...initial,
-      players: initial.players.map((candidate) =>
-        candidate.id === "p3"
-          ? { ...candidate, hp: 0, alive: false }
-          : candidate,
-      ),
-    };
-    const state = beginTurn(withDeadPlayer, [8, 4]);
-    expect(() =>
-      submitAction(state, "p1", { type: "ATTACK", targetPlayerId: "p1" }),
-    ).toThrow(/cannot target themselves/);
-    expect(() =>
-      submitAction(state, "p1", { type: "COUNTER", targetPlayerId: "p3" }),
-    ).toThrow(/dead player/);
+  it("deals 3 cards, draws one from round 2, caps the hand at 5, and reshuffles discard", () => {
+    let state = selectingState();
+    const player = state.players[0]!;
+    expect(player.deckState.hand).toHaveLength(3);
+    expect(getDeckSize(player.deckState)).toBe(8);
+
+    state.phase = "ROUND_STARTING";
+    state = startRound(state, new SeededRandomSource(4));
+    expect(state.players[0]!.deckState.hand).toHaveLength(4);
+
+    state.phase = "ROUND_STARTING";
+    state = startRound(state, new SeededRandomSource(5));
+    expect(state.players[0]!.deckState.hand).toHaveLength(5);
+
+    state.players[0]!.deckState.drawPile = [];
+    state.players[0]!.deckState.discardPile = [{ instanceId: "reshuffle", cardId: "BASE_GUARD" }];
+    state.players[0]!.deckState.hand.pop();
+    state.phase = "ROUND_STARTING";
+    state = startRound(state, new SeededRandomSource(6));
+    expect(state.players[0]!.deckState.hand.some((card) => card.instanceId === "reshuffle")).toBe(true);
   });
 
-  it("rejects a second submission from the same player", () => {
-    const state = beginTurn(makeGame(2), [8, 4]);
-    const submitted = submitAction(state, "p1", { type: "DEFEND" });
-    expect(() => submitAction(submitted, "p1", { type: "EVADE" })).toThrow(
-      /already submitted/,
-    );
-  });
-});
-
-describe("defense and exposed attacks", () => {
-  it("does not reduce damage before the defender's action activates", () => {
-    const result = playTurn(makeGame(2), [9, 1], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "DEFEND" },
-    });
-    expect(player(result.state, "p2").hp).toBe(MAX_HP - NORMAL_DAMAGE);
+  it("lets Tactician inspect 4 opening cards and keep exactly 3", () => {
+    const state = createGame(players(["TACTICIAN", "DUELIST"]), new SeededRandomSource(1));
+    const tactician = state.players[0]!;
+    expect(tactician.deckState.pendingInitialHandSelection).toHaveLength(4);
+    const selected = tactician.deckState.pendingInitialHandSelection.slice(0, 3).map((card) => card.instanceId);
+    const chosen = chooseInitialHand(state, tactician.id, selected);
+    expect(chosen.players[0]!.deckState.hand).toHaveLength(3);
+    expect(chosen.players[0]!.deckState.discardPile).toHaveLength(1);
   });
 
-  it("reduces damage to 2.5 after defense activates", () => {
-    const result = playTurn(makeGame(2), [1, 9], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "DEFEND" },
-    });
-    expect(player(result.state, "p2").hp).toBe(MAX_HP - REDUCED_DAMAGE);
-    expect(player(result.state, "p2").activeDefense).toBe(false);
-  });
-
-  it("applies 10 exposed damage after a target completed an attack facing elsewhere", () => {
-    const result = playTurn(makeGame(3), [9, 1, 8], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "DEFEND" },
-      p3: { type: "ATTACK", targetPlayerId: "p1" },
-    });
-    expect(player(result.state, "p1").hp).toBe(MAX_HP - CRITICAL_DAMAGE);
-    expect(result.events).toContainEqual({
-      type: "EXPOSED_ATTACK",
-      attackerId: "p3",
-      targetId: "p1",
-    });
-  });
-
-  it("does not treat a player who has not acted as exposed", () => {
-    const result = playTurn(makeGame(3), [9, 2, 1], {
-      p1: { type: "ATTACK", targetPlayerId: "p3" },
-      p2: { type: "DEFEND" },
-      p3: { type: "ATTACK", targetPlayerId: "p2" },
-    });
-    expect(player(result.state, "p3").hp).toBe(MAX_HP - NORMAL_DAMAGE);
-    expect(result.events.some((event) => event.type === "EXPOSED_ATTACK")).toBe(false);
+  it("applies Guardian 35 HP and the other class passives from data", () => {
+    const state = createGame(players(["GUARDIAN", "DUELIST"]), new SeededRandomSource(2));
+    expect(state.players[0]!.hp).toBe(GUARDIAN_MAX_HP);
+    expect(CHARACTER_CATALOG.DUELIST.passive).toContain("+1");
+    expect(CHARACTER_CATALOG.BERSERKER.passive).toContain("1 증가");
   });
 });
 
-describe("clash", () => {
-  it("resolves mutual attacks once and consumes the slower action", () => {
-    const result = playTurn(
-      makeGame(2),
-      [9, 4],
-      {
-        p1: { type: "ATTACK", targetPlayerId: "p2" },
-        p2: { type: "ATTACK", targetPlayerId: "p1" },
-      },
-      { clash: [8, 5] },
-    );
-    expect(player(result.state, "p1").hp).toBe(MAX_HP);
-    expect(player(result.state, "p2").hp).toBe(MAX_HP - NORMAL_DAMAGE);
-    expect(player(result.state, "p1").facingTargetId).toBe("p2");
-    expect(player(result.state, "p2").facingTargetId).toBe("p1");
-    expect(result.events).toContainEqual({
-      type: "ACTION_SKIPPED",
+describe("private queue", () => {
+  it("supports zero to three cards, removal, and reordering before confirmation", () => {
+    let state = selectingState();
+    setHand(state, "p1", ["BASE_QUICK_STRIKE", "BASE_GUARD", "BASE_EVADE"]);
+    const ids = state.players[0]!.deckState.hand.map((card) => card.instanceId);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p1", 1);
+    state = addQueue(state, "p1", 2);
+    expect(state.players[0]!.deckState.queuedCards).toHaveLength(3);
+
+    state = reorderQueuedCards(state, "p1", state.roundNumber, [ids[2]!, ids[0]!, ids[1]!]);
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.cardInstanceId)).toEqual([
+      ids[2], ids[0], ids[1],
+    ]);
+    state = removeQueuedCard(state, "p1", state.roundNumber, ids[0]!);
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 1]);
+
+    const zeroCardPlayer = confirmRound(state, "p2", state.roundNumber);
+    expect(zeroCardPlayer.players[1]!.deckState.confirmed).toBe(true);
+    expect(zeroCardPlayer.players[1]!.deckState.queuedCards).toEqual([]);
+  });
+
+  it("rejects a fourth queued card and hides no random initiative fields in state", () => {
+    let state = selectingState();
+    setHand(state, "p1", ["BASE_QUICK_STRIKE", "BASE_HEAVY_STRIKE", "BASE_GUARD", "BASE_EVADE"]);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p1", 1, "p2");
+    state = addQueue(state, "p1", 2);
+    expect(() => addQueue(state, "p1", 3)).toThrow("MAX_QUEUED_CARDS_EXCEEDED");
+    expect(state).not.toHaveProperty("actionOrder");
+    expect(state.players[0]).not.toHaveProperty("speedRoll");
+    expect(state.players[0]).not.toHaveProperty("hiddenTieRoll");
+  });
+});
+
+describe("step resolver", () => {
+  it("applies Quick Strike 3 damage and Berserker's direct attack +1", () => {
+    let state = selectingState(["BERSERKER", "DUELIST"]);
+    setHand(state, "p1", ["BASE_QUICK_STRIKE"]);
+    setHand(state, "p2", []);
+    state = addQueue(state, "p1", 0, "p2");
+    const result = resolved(state);
+    expect(result.state.players[1]!.hp).toBe(hp(26));
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "DAMAGE_APPLIED",
       playerId: "p2",
-      reason: "ACTION_ALREADY_CONSUMED",
-    });
+      damage: hp(4),
+    }));
   });
 
-  it("rerolls both clash dice until the tie is broken", () => {
-    const result = playTurn(
-      makeGame(2),
-      [9, 4],
-      {
-        p1: { type: "ATTACK", targetPlayerId: "p2" },
-        p2: { type: "ATTACK", targetPlayerId: "p1" },
-      },
-      { clash: [4, 4, 3, 7] },
-    );
-    expect(player(result.state, "p1").hp).toBe(MAX_HP - NORMAL_DAMAGE);
-    expect(
-      result.events.filter((event) => event.type === "CLASH_ROLLED"),
-    ).toHaveLength(4);
-  });
-});
-
-describe("evade", () => {
-  it("keeps evade active and deals no damage after a successful roll", () => {
-    const result = playTurn(
-      makeGame(2),
-      [4, 9],
-      {
-        p1: { type: "ATTACK", targetPlayerId: "p2" },
-        p2: { type: "EVADE" },
-      },
-      { evade: [8] },
-    );
-    expect(player(result.state, "p2").hp).toBe(MAX_HP);
-    expect(result.events).toContainEqual({ type: "EVADE_SUCCEEDED", playerId: "p2" });
+  it("reduces the step's total attack damage by 5 with base Guard", () => {
+    let state = selectingState();
+    setHand(state, "p1", ["BASE_HEAVY_STRIKE"]);
+    setHand(state, "p2", ["BASE_GUARD"]);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p2", 0);
+    const result = resolved(state);
+    expect(result.state.players[1]!.hp).toBe(hp(30));
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "GUARD_RESOLVED",
+      incomingDamage: hp(5),
+      finalDamage: 0,
+    }));
   });
 
-  it("deals a final 10 damage and ends evade after a failed roll", () => {
-    const result = playTurn(
-      makeGame(2),
-      [8, 9],
-      {
-        p1: { type: "ATTACK", targetPlayerId: "p2" },
-        p2: { type: "EVADE" },
-      },
-      { evade: [3] },
-    );
-    expect(player(result.state, "p2").hp).toBe(MAX_HP - CRITICAL_DAMAGE);
-    expect(result.events).toContainEqual({ type: "EVADE_FAILED", playerId: "p2" });
+  it("keeps HP unchanged on evade success", () => {
+    let state = selectingState();
+    setHand(state, "p1", ["BASE_QUICK_STRIKE"]);
+    setHand(state, "p2", ["BASE_EVADE"]);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p2", 0);
+    const result = resolved(state, new SequenceRandomSource({ EVADE: [8] }));
+    expect(result.state.players[1]!.hp).toBe(hp(30));
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "EVADE_ROLLED",
+      succeeded: true,
+    }));
+    expect(result.events.some((event) => event.type === "DAMAGE_APPLIED")).toBe(false);
   });
 
-  it("rolls on every attack until failure, then uses normal damage", () => {
-    const result = playTurn(
-      makeGame(4),
-      [8, 10, 6, 4],
-      {
-        p1: { type: "ATTACK", targetPlayerId: "p2" },
-        p2: { type: "EVADE" },
-        p3: { type: "ATTACK", targetPlayerId: "p2" },
-        p4: { type: "ATTACK", targetPlayerId: "p2" },
-      },
-      { evade: [9, 2] },
-    );
-    expect(player(result.state, "p2").hp).toBe(
-      MAX_HP - CRITICAL_DAMAGE - NORMAL_DAMAGE,
-    );
-    expect(
-      result.events.filter((event) => event.type === "EVADE_ROLLED"),
-    ).toHaveLength(2);
+  it("applies fixed 10 damage on the first evade failure", () => {
+    let state = selectingState();
+    setHand(state, "p1", ["BASE_QUICK_STRIKE"]);
+    setHand(state, "p2", ["BASE_EVADE"]);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p2", 0);
+    const result = resolved(state, new SequenceRandomSource({ EVADE: [7] }));
+    expect(result.state.players[1]!.hp).toBe(hp(20));
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "DAMAGE_APPLIED",
+      damage: hp(10),
+      source: "EVADE_FAILURE",
+    }));
   });
-});
 
-describe("counter", () => {
-  it("simultaneously applies 10 to the attacker and 2.5 to the counter user", () => {
-    const result = playTurn(makeGame(2), [4, 9], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "COUNTER", targetPlayerId: "p1" },
-    });
-    expect(player(result.state, "p1").hp).toBe(MAX_HP - CRITICAL_DAMAGE);
-    expect(player(result.state, "p2").hp).toBe(MAX_HP - REDUCED_DAMAGE);
-    expect(result.events).toContainEqual({
+  it("cancels the original attack and applies counter 10 / self 2.5 simultaneously", () => {
+    let state = selectingState();
+    setHand(state, "p1", ["BASE_QUICK_STRIKE"]);
+    setHand(state, "p2", ["BASE_COUNTER"]);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p2", 0, "p1");
+    const result = resolved(state);
+    expect(result.state.players[0]!.hp).toBe(hp(20));
+    expect(result.state.players[1]!.hp).toBe(hp(27.5));
+    expect(result.events).toContainEqual(expect.objectContaining({
       type: "COUNTER_TRIGGERED",
-      counterPlayerId: "p2",
-      attackerId: "p1",
-    });
+      attackerDamage: hp(10),
+      counterDamage: hp(2.5),
+    }));
   });
 
-  it("does not trigger before the counter action activates", () => {
-    const result = playTurn(makeGame(2), [9, 1], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "COUNTER", targetPlayerId: "p1" },
-    });
-    expect(player(result.state, "p1").hp).toBe(MAX_HP);
-    expect(player(result.state, "p2").hp).toBe(MAX_HP - NORMAL_DAMAGE);
-    expect(result.events.some((event) => event.type === "COUNTER_TRIGGERED")).toBe(false);
-  });
-
-  it("ignores non-designated attackers and is consumed after one trigger", () => {
-    const result = playTurn(makeGame(4), [8, 10, 9, 6], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "COUNTER", targetPlayerId: "p1" },
-      p3: { type: "ATTACK", targetPlayerId: "p2" },
-      p4: { type: "ATTACK", targetPlayerId: "p2" },
-    });
-    expect(player(result.state, "p2").hp).toBe(
-      MAX_HP - NORMAL_DAMAGE - REDUCED_DAMAGE - NORMAL_DAMAGE,
-    );
-    expect(player(result.state, "p1").hp).toBe(MAX_HP - CRITICAL_DAMAGE);
-    expect(
-      result.events.filter((event) => event.type === "COUNTER_TRIGGERED"),
-    ).toHaveLength(1);
-  });
-
-  it("forbids selecting counter on consecutive turns", () => {
-    const first = playTurn(makeGame(2), [4, 9], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "COUNTER", targetPlayerId: "p1" },
-    });
-    const secondTurn = beginTurn(first.state, [5, 7]);
-    expect(() =>
-      submitAction(secondTurn, "p2", {
-        type: "COUNTER",
-        targetPlayerId: "p1",
-      }),
-    ).toThrow(/consecutive/);
-  });
-});
-
-describe("death, skips, and game results", () => {
-  it("cancels a dead player's action and never retargets an attack", () => {
-    const initial = makeGame(3);
-    const fragile: GameState = {
-      ...initial,
-      players: initial.players.map((candidate) =>
-        candidate.id === "p3" ? { ...candidate, hp: NORMAL_DAMAGE } : candidate,
-      ),
-    };
-    const result = playTurn(fragile, [10, 8, 1], {
-      p1: { type: "ATTACK", targetPlayerId: "p3" },
-      p2: { type: "ATTACK", targetPlayerId: "p3" },
-      p3: { type: "DEFEND" },
-    });
-    expect(player(result.state, "p3").alive).toBe(false);
-    expect(player(result.state, "p1").hp).toBe(MAX_HP);
+  it("resolves mutual attacks as a clash with card and Duelist bonuses", () => {
+    let state = selectingState(["DUELIST", "BERSERKER"]);
+    setHand(state, "p1", ["BASE_QUICK_STRIKE"]);
+    setHand(state, "p2", ["BASE_HEAVY_STRIKE"]);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p2", 0, "p1");
+    const result = resolved(state, new SequenceRandomSource({ CLASH: [4, 6] }));
     expect(result.events).toContainEqual({
-      type: "ACTION_SKIPPED",
+      type: "CLASH_ROLLED",
+      stepIndex: 0,
+      playerId: "p1",
+      roll: 4,
+      bonus: 3,
+      total: 7,
+    });
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "CLASH_RESOLVED",
+      winnerId: "p1",
+      loserId: "p2",
+    }));
+  });
+
+  it("fires every current-step action before deaths, then cancels the dead player's later step", () => {
+    let state = selectingState(["DUELIST", "DUELIST", "DUELIST"]);
+    setHand(state, "p1", ["BASE_HEAVY_STRIKE"]);
+    setHand(state, "p2", ["BASE_QUICK_STRIKE", "BASE_HEAVY_STRIKE"]);
+    setHand(state, "p3", []);
+    state.players[1]!.hp = hp(5);
+    state = addQueue(state, "p1", 0, "p2");
+    state = addQueue(state, "p2", 0, "p3");
+    state = addQueue(state, "p2", 1, "p3");
+    const result = resolved(state);
+    expect(result.state.players[1]!.alive).toBe(false);
+    expect(result.state.players[2]!.hp).toBe(hp(27));
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "CARD_CANCELLED",
       playerId: "p2",
-      reason: "TARGET_DEAD",
-    });
-    expect(result.events).toContainEqual({
-      type: "ACTION_SKIPPED",
-      playerId: "p3",
-      reason: "DEAD",
-    });
+      reason: "PLAYER_DEAD",
+      stepIndex: 1,
+    }));
   });
 
-  it("ends with a winner when one survivor remains", () => {
-    const initial = makeGame(2);
-    const fragile: GameState = {
-      ...initial,
-      players: initial.players.map((candidate) =>
-        candidate.id === "p2" ? { ...candidate, hp: NORMAL_DAMAGE } : candidate,
-      ),
-    };
-    const result = playTurn(fragile, [9, 1], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "DEFEND" },
-    });
-    expect(result.state.phase).toBe("FINISHED");
-    expect(result.state.result).toEqual({ type: "WINNER", winnerPlayerId: "p1" });
-    expect(result.events.at(-1)).toEqual({
-      type: "GAME_FINISHED",
-      result: { type: "WINNER", winnerPlayerId: "p1" },
-    });
-  });
-
-  it("ends in a draw when simultaneous counter damage kills everyone", () => {
-    const initial = makeGame(2);
-    const fragile: GameState = {
-      ...initial,
-      players: initial.players.map((candidate) =>
-        candidate.id === "p1"
-          ? { ...candidate, hp: CRITICAL_DAMAGE }
-          : { ...candidate, hp: REDUCED_DAMAGE },
-      ),
-    };
-    const result = playTurn(fragile, [4, 9], {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "COUNTER", targetPlayerId: "p1" },
-    });
-    expect(player(result.state, "p1").alive).toBe(false);
-    expect(player(result.state, "p2").alive).toBe(false);
-    expect(result.state.result).toEqual({ type: "DRAW" });
-  });
-
-  it("keeps the submitted state unchanged while resolving into a new state", () => {
-    const started = beginTurn(makeGame(2), [9, 1]);
-    const submitted = submitAll(started, {
-      p1: { type: "ATTACK", targetPlayerId: "p2" },
-      p2: { type: "DEFEND" },
-    });
-    const result = resolveTurn(submitted, new SeededRandomSource(1));
-    expect(submitted.phase).toBe("RESOLVING");
-    expect(player(submitted, "p2").hp).toBe(MAX_HP);
-    expect(player(result.state, "p2").hp).toBe(MAX_HP - NORMAL_DAMAGE);
+  it("enters reward selection after every third round", () => {
+    const state = selectingState();
+    state.roundNumber = 3;
+    const result = resolved(state);
+    expect(result.state.phase).toBe("SELECTING_REWARD");
+    expect(result.state.players.every((player) => player.deckState.pendingRewardOptions.length === 3)).toBe(true);
   });
 });
 
-describe("random sources", () => {
-  it("replays explicit sequence values and validates their range", () => {
-    const source = new SequenceRandomSource([3, 9]);
-    expect(source.nextInt(1, 10)).toBe(3);
-    expect(source.nextInt(1, 10)).toBe(9);
-    expect(() => source.nextInt(1, 10)).toThrow(/ran out/);
-    expect(() => new SequenceRandomSource([11]).nextInt(1, 10)).toThrow(
-      /outside/,
-    );
+describe("reward and deck replacement", () => {
+  it("offers 2 class + 1 common unique cards and grows 8→9→10", () => {
+    let state = selectingState();
+    state.players[1]!.alive = false;
+    state = prepareRewardOptions(state, new SeededRandomSource(30));
+    let options = state.players[0]!.deckState.pendingRewardOptions;
+    expect(new Set(options).size).toBe(3);
+    expect(options.filter((id) => CARD_CATALOG[id]!.classId === "DUELIST")).toHaveLength(2);
+    expect(options.filter((id) => CARD_CATALOG[id]!.classId === "COMMON")).toHaveLength(1);
+    state = selectReward(state, "p1", options[0]!, new SeededRandomSource(31));
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(9);
+
+    state = prepareRewardOptions(state, new SeededRandomSource(32));
+    options = state.players[0]!.deckState.pendingRewardOptions;
+    state = selectReward(state, "p1", options[0]!, new SeededRandomSource(33));
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(MAX_DECK_SIZE);
   });
 
-  it("produces the same sequence for the same seed", () => {
-    const first = new SeededRandomSource(1234);
-    const second = new SeededRandomSource(1234);
-    expect(Array.from({ length: 8 }, () => first.nextInt(1, 10))).toEqual(
-      Array.from({ length: 8 }, () => second.nextInt(1, 10)),
+  it("requires an old-card removal at size 10 and keeps at least one attack", () => {
+    let state = selectingState();
+    const player = state.players[0]!;
+    player.deckState.drawPile.push(
+      { instanceId: "bonus-1", cardId: "COMMON_FIRST_AID" },
+      { instanceId: "bonus-2", cardId: "COMMON_QUICK_SUPPLY" },
     );
+    state.players[1]!.alive = false;
+    state = prepareRewardOptions(state, new SeededRandomSource(40));
+    const reward = state.players[0]!.deckState.pendingRewardOptions[0]!;
+    state = selectReward(state, "p1", reward, new SeededRandomSource(41));
+    expect(state.phase).toBe("SELECTING_DECK_REMOVAL");
+    const oldCard = getAllDeckCards(state.players[0]!.deckState).find(
+      (card) => card.cardId === "BASE_GUARD",
+    )!;
+    state = selectDeckRemoval(state, "p1", oldCard.instanceId, new SeededRandomSource(42));
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(10);
+    expect(getAllDeckCards(state.players[0]!.deckState).some((card) =>
+      CARD_CATALOG[card.cardId]!.category === "ATTACK")).toBe(true);
+    expect(state.phase).toBe("ROUND_STARTING");
   });
 });

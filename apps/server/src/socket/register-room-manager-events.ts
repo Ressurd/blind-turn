@@ -25,22 +25,61 @@ function emitViews(io: GameServer, roomManager: RoomManager, roomCode: string): 
   }
 }
 
-function emitPrivateSpeeds(
+function emitInitialHands(
   io: GameServer,
   roomManager: RoomManager,
   roomCode: string,
 ): void {
   const room = roomManager.getRoom(roomCode);
-  if (!room?.game) return;
-  const state = room.game.getState();
+  if (!room) return;
   for (const player of room.players) {
     if (!player.connected || !player.socketId) continue;
-    const gamePlayer = state.players.find((candidate) => candidate.id === player.playerId);
-    if (gamePlayer?.speedRoll === null || gamePlayer?.speedRoll === undefined) continue;
-    io.to(player.socketId).emit("game:private-speed", {
-      turnNumber: state.turnNumber,
-      speed: gamePlayer.speedRoll,
-    });
+    const view = roomManager.getPlayerView(roomCode, player.playerId);
+    if (view.initialHandOptions.length > 0) {
+      io.to(player.socketId).emit("game:initial-hand-options", {
+        cards: view.initialHandOptions,
+      });
+    }
+  }
+}
+
+function emitRewardOptions(
+  io: GameServer,
+  roomManager: RoomManager,
+  roomCode: string,
+  deadlineAt: number,
+): void {
+  const room = roomManager.getRoom(roomCode);
+  if (!room) return;
+  for (const player of room.players) {
+    if (!player.connected || !player.socketId) continue;
+    const view = roomManager.getPlayerView(roomCode, player.playerId);
+    if (view.rewardOptions.length > 0) {
+      io.to(player.socketId).emit("game:reward-options", {
+        cards: view.rewardOptions,
+        deadlineAt,
+      });
+    }
+  }
+}
+
+function emitDeckRemoval(
+  io: GameServer,
+  roomManager: RoomManager,
+  roomCode: string,
+  deadlineAt: number,
+): void {
+  const room = roomManager.getRoom(roomCode);
+  if (!room) return;
+  for (const player of room.players) {
+    if (!player.connected || !player.socketId) continue;
+    const view = roomManager.getPlayerView(roomCode, player.playerId);
+    if (view.deckRemovalCandidates.length > 0) {
+      io.to(player.socketId).emit("game:deck-removal-required", {
+        cards: view.deckRemovalCandidates,
+        deadlineAt,
+      });
+    }
   }
 }
 
@@ -65,35 +104,85 @@ export function registerRoomManagerEvents(
           playerId: event.playerId,
         });
         break;
+      case "CHARACTER_SELECTED":
+        io.to(event.roomCode).emit("room:character-selected", {
+          playerId: event.playerId,
+          characterId: event.characterId,
+        });
+        break;
       case "GAME_STARTED":
         io.to(event.roomCode).emit("game:started", {
-          turnNumber: event.turnNumber,
+          roundNumber: event.roundNumber,
         });
-        emitPrivateSpeeds(io, roomManager, event.roomCode);
+        emitInitialHands(io, roomManager, event.roomCode);
         break;
-      case "SUBMISSION_STATUS":
-        io.to(event.roomCode).emit("game:submission-status", event.payload);
+      case "QUEUE_UPDATED": {
+        const room = roomManager.getRoom(event.roomCode);
+        const player = room?.players.find((candidate) => candidate.playerId === event.playerId);
+        if (player?.socketId) {
+          io.to(player.socketId).emit("game:queue-updated", {
+            queuedCards: event.queuedCards,
+          });
+        }
         break;
-      case "TURN_RESOLVING":
-        io.to(event.roomCode).emit("game:turn-resolving", {
-          turnNumber: event.turnNumber,
+      }
+      case "ROUND_SUBMISSION_STATUS":
+        io.to(event.roomCode).emit("game:round-submission-status", event.payload);
+        break;
+      case "ROUND_LOCKED":
+        io.to(event.roomCode).emit("game:round-locked", {
+          roundNumber: event.roundNumber,
         });
         break;
-      case "TURN_RESOLVED":
-        io.to(event.roomCode).emit("game:turn-resolved", event.payload);
+      case "CARD_COUNTS_REVEALED":
+        io.to(event.roomCode).emit("game:card-counts-revealed", {
+          roundNumber: event.roundNumber,
+          cardCounts: event.cardCounts,
+        });
         break;
-      case "NEXT_TURN":
-        io.to(event.roomCode).emit("game:next-turn", {
-          turnNumber: event.turnNumber,
+      case "ROUND_RESOLVING":
+        io.to(event.roomCode).emit("game:round-resolving", {
+          roundNumber: event.roundNumber,
+        });
+        break;
+      case "ROUND_RESOLVED":
+        io.to(event.roomCode).emit("game:round-resolved", event.payload);
+        break;
+      case "NEXT_ROUND":
+        io.to(event.roomCode).emit("game:next-round", {
+          roundNumber: event.roundNumber,
           actionDeadlineAt: event.actionDeadlineAt,
         });
-        emitPrivateSpeeds(io, roomManager, event.roomCode);
         break;
+      case "REWARD_OPTIONS":
+        emitRewardOptions(io, roomManager, event.roomCode, event.deadlineAt);
+        break;
+      case "REWARD_SELECTED":
+        io.to(event.roomCode).emit("game:reward-selected", {
+          playerId: event.playerId,
+        });
+        break;
+      case "DECK_REMOVAL_REQUIRED":
+        emitDeckRemoval(io, roomManager, event.roomCode, event.deadlineAt);
+        break;
+      case "DECK_UPDATED": {
+        const room = roomManager.getRoom(event.roomCode);
+        const player = room?.players.find((candidate) => candidate.playerId === event.playerId);
+        if (player?.socketId) {
+          io.to(player.socketId).emit("game:deck-updated", {
+            deckSize: event.deckSize,
+          });
+        }
+        break;
+      }
       case "GAME_FINISHED":
         io.to(event.roomCode).emit("game:finished", {
           result: event.result,
-          totalTurns: event.totalTurns,
+          totalRounds: event.totalRounds,
         });
+        break;
+      case "CHAT_MESSAGE":
+        io.to(event.roomCode).emit("chat:message", event.message);
         break;
       case "GAME_ERROR":
         io.to(event.roomCode).emit("game:error", event.error);

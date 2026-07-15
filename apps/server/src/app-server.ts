@@ -10,6 +10,7 @@ import {
   type AppLogger,
 } from "./logging/logger";
 import { RoomManager } from "./rooms/room-manager";
+import { registerChatEvents } from "./socket/register-chat-events";
 import { registerGameEvents } from "./socket/register-game-events";
 import { registerRoomEvents } from "./socket/register-room-events";
 import { registerRoomManagerEvents } from "./socket/register-room-manager-events";
@@ -103,6 +104,7 @@ export function createBlindTurnServer(
     });
     registerRoomEvents(socket, roomManager, logger);
     registerGameEvents(socket, roomManager, logger);
+    registerChatEvents(socket, roomManager, logger);
     socket.on("disconnect", (reason) => {
       roomManager.disconnectSocket(socket.id);
       logger.info("socket_disconnected", {

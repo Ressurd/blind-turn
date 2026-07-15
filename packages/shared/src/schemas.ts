@@ -4,6 +4,7 @@ export const CreatePlayerInputSchema = z.object({
   id: z.string().trim().min(1),
   nickname: z.string().trim().min(1, "닉네임을 입력하세요.").max(20),
   seatNumber: z.number().int().min(1).max(6),
+  characterId: z.enum(["DUELIST", "BERSERKER", "GUARDIAN", "TACTICIAN"]),
 });
 
 export const CreatePlayersSchema = z
@@ -32,14 +33,6 @@ export const CreatePlayersSchema = z
       seats.add(player.seatNumber);
     });
   });
-
-export const PlayerActionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("ATTACK"), targetPlayerId: z.string().min(1) }),
-  z.object({ type: z.literal("DEFEND") }),
-  z.object({ type: z.literal("EVADE") }),
-  z.object({ type: z.literal("COUNTER"), targetPlayerId: z.string().min(1) }),
-  z.object({ type: z.literal("PASS") }),
-]);
 
 export const ManualRollListSchema = z.array(
   z.number().int().min(1).max(10),
