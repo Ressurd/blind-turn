@@ -1,6 +1,7 @@
 import {
   MAX_COPIES_PER_CARD_ID,
-  MAX_DECK_SIZE,
+  MAX_TOTAL_DECK_SIZE,
+  REWARD_SELECTION_COUNT,
 } from "../constants";
 import {
   getCardDefinition,
@@ -11,7 +12,7 @@ import {
   countCardCopies,
   getAllDeckCards,
   getDeckSize,
-  insertNewCard,
+  insertNewCards,
   removeCardInstance,
 } from "../deck/deck-state";
 import type { RandomSource } from "../random";
@@ -23,6 +24,21 @@ function eligibleCards(player: PlayerState, cardIds: readonly string[]): string[
   return cardIds.filter(
     (cardId) => countCardCopies(player.deckState, cardId) < MAX_COPIES_PER_CARD_ID,
   );
+}
+
+function findAlivePlayer(state: GameState, playerId: string): PlayerState {
+  const player = state.players.find((candidate) => candidate.id === playerId);
+  if (!player?.alive) throw new GameEngineError("PLAYER_DEAD");
+  return player;
+}
+
+function clearCompletedRewardCycle(state: GameState): void {
+  for (const player of state.players) {
+    player.deckState.newlyAddedCardInstanceIds = [];
+    player.deckState.selectedRemovalInstanceIds = [];
+    player.deckState.requiredRemovalCount = 0;
+    player.deckState.deckRemovalConfirmed = false;
+  }
 }
 
 export function prepareRewardOptions(
@@ -48,56 +64,99 @@ export function prepareRewardOptions(
       ...randomSource.shuffle(classIds).slice(0, 2),
       ...randomSource.shuffle(commonIds).slice(0, 1),
     ];
-    player.deckState.selectedRewardCardId = null;
-    player.deckState.pendingRewardCardId = null;
-    player.deckState.pendingRemovalRequired = false;
+    player.deckState.selectedRewardCardIds = [];
+    player.deckState.rewardConfirmed = false;
+    player.deckState.requiredRemovalCount = 0;
+    player.deckState.selectedRemovalInstanceIds = [];
+    player.deckState.newlyAddedCardInstanceIds = [];
+    player.deckState.deckRemovalConfirmed = false;
   }
   return next;
 }
 
-function allRewardsSelected(state: GameState): boolean {
-  return state.players
-    .filter((player) => player.alive)
-    .every((player) => player.deckState.pendingRewardOptions.length === 0);
-}
-
-export function selectReward(
+export function updateRewardSelection(
   state: GameState,
   playerId: string,
-  cardId: string,
+  cardIds: readonly string[],
+): GameState {
+  if (state.phase !== "SELECTING_REWARD") {
+    throw new GameEngineError("INVALID_GAME_PHASE");
+  }
+  const next = cloneGameState(state);
+  const player = findAlivePlayer(next, playerId);
+  if (player.deckState.rewardConfirmed) {
+    throw new GameEngineError("INVALID_REWARD_SELECTION");
+  }
+  const uniqueIds = [...new Set(cardIds)];
+  if (
+    uniqueIds.length !== cardIds.length
+    || uniqueIds.length > REWARD_SELECTION_COUNT
+    || uniqueIds.some((cardId) =>
+      !player.deckState.pendingRewardOptions.includes(cardId)
+      || countCardCopies(player.deckState, cardId) >= MAX_COPIES_PER_CARD_ID
+    )
+  ) {
+    throw new GameEngineError("INVALID_REWARD_SELECTION");
+  }
+  player.deckState.selectedRewardCardIds = uniqueIds;
+  return next;
+}
+
+function allRewardsConfirmed(state: GameState): boolean {
+  return state.players
+    .filter((player) => player.alive)
+    .every((player) => player.deckState.rewardConfirmed);
+}
+
+export function confirmRewardSelection(
+  state: GameState,
+  playerId: string,
   randomSource: RandomSource,
 ): GameState {
   if (state.phase !== "SELECTING_REWARD") {
     throw new GameEngineError("INVALID_GAME_PHASE");
   }
   const next = cloneGameState(state);
-  const player = next.players.find((candidate) => candidate.id === playerId);
-  if (!player || !player.alive) throw new GameEngineError("PLAYER_DEAD");
-  if (!player.deckState.pendingRewardOptions.includes(cardId)) {
-    throw new GameEngineError("REWARD_OPTION_NOT_FOUND");
+  const player = findAlivePlayer(next, playerId);
+  if (
+    player.deckState.rewardConfirmed
+    || player.deckState.selectedRewardCardIds.length !== REWARD_SELECTION_COUNT
+  ) {
+    throw new GameEngineError("INVALID_REWARD_SELECTION");
   }
-  if (countCardCopies(player.deckState, cardId) >= MAX_COPIES_PER_CARD_ID) {
-    throw new GameEngineError("REWARD_OPTION_NOT_FOUND");
+  const selectedIds = [...player.deckState.selectedRewardCardIds];
+  if (selectedIds.some((cardId) =>
+    !player.deckState.pendingRewardOptions.includes(cardId)
+    || countCardCopies(player.deckState, cardId) >= MAX_COPIES_PER_CARD_ID
+  )) {
+    throw new GameEngineError("INVALID_REWARD_SELECTION");
   }
+  const inserted = insertNewCards(
+    player.deckState,
+    player.id,
+    selectedIds,
+    randomSource,
+  );
+  player.deckState = inserted.state;
+  player.deckState.newlyAddedCardInstanceIds = inserted.inserted.map(
+    (card) => card.instanceId,
+  );
+  player.deckState.requiredRemovalCount = Math.max(
+    0,
+    getDeckSize(player.deckState) - MAX_TOTAL_DECK_SIZE,
+  );
+  player.deckState.deckRemovalConfirmed =
+    player.deckState.requiredRemovalCount === 0;
+  player.deckState.rewardConfirmed = true;
   player.deckState.pendingRewardOptions = [];
-  player.deckState.selectedRewardCardId = cardId;
-  if (getDeckSize(player.deckState) < MAX_DECK_SIZE) {
-    player.deckState = insertNewCard(
-      player.deckState,
-      player.id,
-      cardId,
-      randomSource,
+
+  if (allRewardsConfirmed(next)) {
+    const needsRemoval = next.players.some(
+      (candidate) =>
+        candidate.alive && candidate.deckState.requiredRemovalCount > 0,
     );
-  } else {
-    player.deckState.pendingRewardCardId = cardId;
-    player.deckState.pendingRemovalRequired = true;
-  }
-  if (allRewardsSelected(next)) {
-    next.phase = next.players.some(
-      (candidate) => candidate.alive && candidate.deckState.pendingRemovalRequired,
-    )
-      ? "SELECTING_DECK_REMOVAL"
-      : "ROUND_STARTING";
+    next.phase = needsRemoval ? "SELECTING_DECK_REMOVAL" : "ROUND_STARTING";
+    if (!needsRemoval) clearCompletedRewardCycle(next);
   }
   return next;
 }
@@ -107,74 +166,122 @@ export function selectRandomPendingRewards(
   randomSource: RandomSource,
 ): GameState {
   let next = state;
-  for (const player of state.players.filter((candidate) =>
-    candidate.alive && candidate.deckState.pendingRewardOptions.length > 0
-  )) {
-    const options = player.deckState.pendingRewardOptions;
-    const index = randomSource.nextInt(0, options.length - 1, "REWARD");
-    next = selectReward(next, player.id, options[index]!, randomSource);
+  for (const playerId of state.players
+    .filter((candidate) => candidate.alive && !candidate.deckState.rewardConfirmed)
+    .map((candidate) => candidate.id)) {
+    const player = next.players.find((candidate) => candidate.id === playerId)!;
+    const selected = randomSource
+      .shuffle(player.deckState.pendingRewardOptions)
+      .slice(0, REWARD_SELECTION_COUNT);
+    next = updateRewardSelection(next, playerId, selected);
+    next = confirmRewardSelection(next, playerId, randomSource);
   }
   return next;
 }
 
 export function getDeckRemovalCandidates(player: PlayerState) {
-  return getAllDeckCards(player.deckState);
+  const newIds = new Set(player.deckState.newlyAddedCardInstanceIds);
+  return getAllDeckCards(player.deckState).filter(
+    (card) => !newIds.has(card.instanceId),
+  );
 }
 
-export function selectDeckRemoval(
+export function updateDeckRemovalSelection(
   state: GameState,
   playerId: string,
-  instanceId: string,
-  randomSource: RandomSource,
+  instanceIds: readonly string[],
 ): GameState {
   if (state.phase !== "SELECTING_DECK_REMOVAL") {
     throw new GameEngineError("INVALID_GAME_PHASE");
   }
   const next = cloneGameState(state);
-  const player = next.players.find((candidate) => candidate.id === playerId);
-  if (!player || !player.alive) throw new GameEngineError("PLAYER_DEAD");
-  const rewardCardId = player.deckState.pendingRewardCardId;
-  if (!rewardCardId || !player.deckState.pendingRemovalRequired) {
+  const player = findAlivePlayer(next, playerId);
+  if (player.deckState.deckRemovalConfirmed) {
     throw new GameEngineError("INVALID_DECK_REMOVAL");
   }
-  const removal = getAllDeckCards(player.deckState).find(
-    (card) => card.instanceId === instanceId,
+  const uniqueIds = [...new Set(instanceIds)];
+  const candidates = new Set(
+    getDeckRemovalCandidates(player).map((card) => card.instanceId),
   );
-  if (!removal) throw new GameEngineError("INVALID_DECK_REMOVAL");
+  if (
+    uniqueIds.length !== instanceIds.length
+    || uniqueIds.length > player.deckState.requiredRemovalCount
+    || uniqueIds.some((instanceId) => !candidates.has(instanceId))
+  ) {
+    throw new GameEngineError("INVALID_DECK_REMOVAL");
+  }
+  player.deckState.selectedRemovalInstanceIds = uniqueIds;
+  return next;
+}
+
+function allDeckRemovalsConfirmed(state: GameState): boolean {
+  return state.players
+    .filter((player) => player.alive)
+    .every((player) =>
+      player.deckState.requiredRemovalCount === 0
+      || player.deckState.deckRemovalConfirmed
+    );
+}
+
+export function confirmDeckRemoval(
+  state: GameState,
+  playerId: string,
+): GameState {
+  if (state.phase !== "SELECTING_DECK_REMOVAL") {
+    throw new GameEngineError("INVALID_GAME_PHASE");
+  }
+  const next = cloneGameState(state);
+  const player = findAlivePlayer(next, playerId);
+  const selectedIds = [...player.deckState.selectedRemovalInstanceIds];
+  if (
+    player.deckState.deckRemovalConfirmed
+    || player.deckState.requiredRemovalCount <= 0
+    || selectedIds.length !== player.deckState.requiredRemovalCount
+  ) {
+    throw new GameEngineError("INVALID_DECK_REMOVAL");
+  }
+  const selected = new Set(selectedIds);
   const attackCountAfterRemoval = getAllDeckCards(player.deckState).filter(
-    (card) => card.instanceId !== instanceId && isAttackCard(card.cardId),
-  ).length + (isAttackCard(rewardCardId) ? 1 : 0);
+    (card) => !selected.has(card.instanceId) && isAttackCard(card.cardId),
+  ).length;
   if (attackCountAfterRemoval < 1) {
     throw new GameEngineError("ATTACK_CARD_REQUIRED");
   }
-  const removed = removeCardInstance(player.deckState, instanceId);
-  if (!removed.removed) throw new GameEngineError("INVALID_DECK_REMOVAL");
-  player.deckState = insertNewCard(
-    removed.state,
-    player.id,
-    rewardCardId,
-    randomSource,
-  );
-  player.deckState.pendingRewardCardId = null;
-  player.deckState.pendingRemovalRequired = false;
-  if (next.players
-    .filter((candidate) => candidate.alive)
-    .every((candidate) => !candidate.deckState.pendingRemovalRequired)) {
+  for (const instanceId of selectedIds) {
+    const removal = removeCardInstance(player.deckState, instanceId);
+    if (!removal.removed) throw new GameEngineError("INVALID_DECK_REMOVAL");
+    removal.state.permanentlyRemovedCards.push(removal.removed);
+    player.deckState = removal.state;
+  }
+  player.deckState.deckRemovalConfirmed = true;
+  if (allDeckRemovalsConfirmed(next)) {
     next.phase = "ROUND_STARTING";
+    clearCompletedRewardCycle(next);
   }
   return next;
 }
 
-export function chooseAutomaticDeckRemoval(player: PlayerState): string {
-  const cards = getAllDeckCards(player.deckState);
-  const attackCards = cards.filter((card) => isAttackCard(card.cardId));
-  const removable = cards.filter(
-    (card) => attackCards.length > 1 || !isAttackCard(card.cardId),
-  );
-  const preferred = removable.find(
-    (card) => getCardDefinition(card.cardId).classId === "BASE",
-  );
-  const candidate = preferred ?? removable[0];
-  if (!candidate) throw new GameEngineError("ATTACK_CARD_REQUIRED");
-  return candidate.instanceId;
+export function chooseAutomaticDeckRemovals(player: PlayerState): string[] {
+  const required = player.deckState.requiredRemovalCount;
+  const cards = getDeckRemovalCandidates(player).sort((left, right) => {
+    const leftBase = getCardDefinition(left.cardId).classId === "BASE" ? 0 : 1;
+    const rightBase = getCardDefinition(right.cardId).classId === "BASE" ? 0 : 1;
+    if (leftBase !== rightBase) return leftBase - rightBase;
+    return Number(isAttackCard(left.cardId)) - Number(isAttackCard(right.cardId));
+  });
+  const attackCount = getAllDeckCards(player.deckState).filter((card) =>
+    isAttackCard(card.cardId)
+  ).length;
+  let removedAttacks = 0;
+  const selected: string[] = [];
+  for (const card of cards) {
+    if (selected.length >= required) break;
+    if (isAttackCard(card.cardId) && attackCount - removedAttacks <= 1) continue;
+    selected.push(card.instanceId);
+    if (isAttackCard(card.cardId)) removedAttacks += 1;
+  }
+  if (selected.length !== required) {
+    throw new GameEngineError("ATTACK_CARD_REQUIRED");
+  }
+  return selected;
 }

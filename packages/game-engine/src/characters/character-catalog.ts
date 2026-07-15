@@ -34,7 +34,7 @@ export const CHARACTER_CATALOG: Record<CharacterClassId, CharacterDefinition> = 
   TACTICIAN: {
     id: "TACTICIAN",
     name: "전술가",
-    passive: "시작 카드 4장을 보고 3장을 선택합니다.",
+    passive: "시작 카드 6장을 보고 5장을 선택합니다.",
     playStyle: "손패 순환과 카드 회수에 강합니다.",
     maxHp: MAX_HP,
   },

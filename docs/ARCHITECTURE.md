@@ -38,11 +38,12 @@ sequenceDiagram
 
 `PlayerState.deckState`가 각 플레이어 카드의 단일 원본입니다.
 
-- `drawPile`, `hand`, `discardPile`
+- `drawPile`, `hand`, `discardPile`, `permanentlyRemovedCards`
 - `queuedCards`: 확정 전 0~3장과 명시적 단계(0~2), 대상/추가 선택
 - `confirmed`
-- `pendingInitialHandSelection`: 전술가 시작 4장
-- `pendingRewardOptions`, `selectedRewardCardId`, `pendingRewardCardId`, `pendingRemovalRequired`
+- `pendingInitialHandSelection`: 전술가 시작 후보 6장
+- `pendingRewardOptions`, `selectedRewardCardIds`, `rewardConfirmed`
+- `requiredRemovalCount`, `selectedRemovalInstanceIds`, `newlyAddedCardInstanceIds`, `deckRemovalConfirmed`
 
 `GameState.phase`는 `ROUND_STARTING → SELECTING_CARDS → RESOLVING_ROUND → (SELECTING_REWARD → SELECTING_DECK_REMOVAL) → ROUND_STARTING`으로 이동하며 생존자가 1명 이하이면 `FINISHED`가 됩니다.
 
@@ -65,7 +66,7 @@ sequenceDiagram
 공개:
 
 - 닉네임, 좌석, 캐릭터, 연결/준비, HP/생존
-- 손패/뽑기/버림/전체 덱 장수와 확정 여부
+- 손패/뽑기/버림/전체 덱/영구 제거 장수와 확정 여부
 - 라운드 잠금 이후에만 사용 카드 장수
 - 완료된 공개 BattleEvent, 결과, 채팅
 
@@ -74,7 +75,9 @@ sequenceDiagram
 - 손패/버린 카드의 instanceId와 정의
 - 뽑기 더미의 카드 종류별 수량 집계와 전체 덱 위치별 집계
 - 큐의 카드, 순서, 대상과 추가 선택
-- 전술가 시작 선택지, 보상 3장, 제거 후보
+- 전술가 시작 선택지, 보상 후보와 현재 2장 선택
+- 제거 카드 상세, 선택 상태, 이번 성장에서 추가되어 제거 불가능한 카드
+- 영구 제거 카드 상세
 
 미공개:
 
@@ -88,7 +91,7 @@ sequenceDiagram
 
 - 행동 선택: 서버 기준 60초. 미확정 플레이어는 카드 0장으로 확정
 - 전투 재생: 연결된 플레이어의 완료 신호 또는 45초 후 자동 진행
-- 보상/덱 제거: 서버 기준 각각 30초. 미선택은 서버가 유효한 선택을 자동 적용
+- 보상/덱 제거: 서버 기준 각각 60초. 미선택은 서버가 서로 다른 보상 2장/필요한 기존 카드를 자동 적용
 - 로비 연결 해제: 30초 뒤 제거
 - 전원 연결 해제 방: 10분 뒤 삭제
 
@@ -96,6 +99,10 @@ sequenceDiagram
 
 ## 재접속과 재생 복구
 
-Socket ID와 playerId를 분리합니다. 브라우저는 `roomCode`, `playerId`, `reconnectToken`만 localStorage에 저장합니다. 토큰 검증 후 서버는 소켓 소유권을 교체하고 본인 손패/큐/선택/기한/최근 채팅을 복원합니다. 전투 재생 도중이면 `pendingRoundPlayback`도 전달해 최종 HP로 즉시 건너뛰지 않고 해당 라운드를 다시 재생할 수 있습니다.
+Socket ID와 playerId를 분리합니다. 브라우저는 `roomCode`, `playerId`, `reconnectToken`만 localStorage에 저장합니다. 토큰 검증 후 서버는 소켓 소유권을 교체하고 본인 손패/큐/성장 2장 선택/덱 정리 선택/영구 제거/기한/최근 채팅을 복원합니다. 전투 재생 도중이면 `pendingRoundPlayback`도 전달해 최종 HP로 즉시 건너뛰지 않고 해당 라운드를 다시 재생할 수 있습니다.
+
+## Combat Playback 박자
+
+클라이언트 재생 관리자는 `PLAYBACK_BEAT_MS = 600`을 단일 시간 원본으로 사용합니다. 단계 시작, 같은 단계 카드 일괄 공개, 대상 강조, 판정, 단계 단위 동시 HP 적용, 결과 유지와 전환이 정수 박자로 순차 실행됩니다. 합은 서버의 `CLASH_ROLLED` 이벤트를 재굴림 회차별로 묶고 첫 번째 룰렛/결과, 두 번째 룰렛/결과, 보정, 비교, 동률 또는 승자를 각각 독립 박자로 재생합니다. CSS 룰렛은 서버 결과로 끝나는 결정적 프레임만 표시하며 난수를 만들지 않습니다. 1/1.5/2배속은 컨트롤러 대기 시간과 CSS custom property에 동일하게 적용되며, 건너뛰기는 남은 타이머를 정리하고 HP/덱 displayState를 서버 확정 상태로 맞춥니다.
 
 서버 프로세스 재시작 후에는 메모리 방이 사라지므로 복구할 수 없습니다. 다중 인스턴스에는 공유 방 저장소, Redis Socket.IO adapter와 고정 세션 전략이 필요합니다.

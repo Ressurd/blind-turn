@@ -84,12 +84,16 @@ export type PlayerDeckState = {
   drawPile: ActionCardInstance[];
   hand: ActionCardInstance[];
   discardPile: ActionCardInstance[];
+  permanentlyRemovedCards: ActionCardInstance[];
   queuedCards: QueuedCardAction[];
   confirmed: boolean;
   pendingRewardOptions: string[];
-  selectedRewardCardId: string | null;
-  pendingRewardCardId: string | null;
-  pendingRemovalRequired: boolean;
+  selectedRewardCardIds: string[];
+  rewardConfirmed: boolean;
+  requiredRemovalCount: number;
+  selectedRemovalInstanceIds: string[];
+  newlyAddedCardInstanceIds: string[];
+  deckRemovalConfirmed: boolean;
   pendingInitialHandSelection: ActionCardInstance[];
   nextInstanceNumber: number;
 };
@@ -275,6 +279,7 @@ export type GameErrorCode =
   | "INVALID_GAME_PHASE"
   | "PLAYER_DEAD"
   | "REWARD_OPTION_NOT_FOUND"
+  | "INVALID_REWARD_SELECTION"
   | "INVALID_DECK_REMOVAL"
   | "ATTACK_CARD_REQUIRED"
   | "INITIAL_HAND_SELECTION_REQUIRED";

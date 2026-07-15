@@ -162,18 +162,30 @@ describe("private round queue", () => {
       instanceId: "host-secret-draw",
       cardId: "BERSERKER_CRUSH",
     };
+    const permanentlyRemoved = hostState.deckState.drawPile.pop()!;
+    permanentlyRemoved.instanceId = "host-secret-removed";
+    permanentlyRemoved.cardId = "COMMON_GAMBLE";
+    hostState.deckState.permanentlyRemovedCards.push(permanentlyRemoved);
     const owner = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
     const opponent = manager.getPlayerView(setup.roomCode, setup.guest.credentials.playerId);
     expect(owner.myDrawPileSummary.find((summary) => summary.cardId === "BERSERKER_CRUSH")?.drawPileCount).toBe(1);
     expect(owner.myDrawPileSummary.every((summary) => !("instanceId" in summary))).toBe(true);
     expect(owner.myDeckSummary.reduce((sum, summary) => sum + summary.totalCount, 0)).toBe(owner.totalDeckCount);
+    expect(owner.myPermanentlyRemovedCards).toContainEqual(expect.objectContaining({
+      instanceId: "host-secret-removed",
+      cardId: "COMMON_GAMBLE",
+    }));
+    expect(owner.permanentlyRemovedCount).toBe(1);
     expect(JSON.stringify(opponent)).not.toContain("BERSERKER_CRUSH");
+    expect(JSON.stringify(opponent)).not.toContain("COMMON_GAMBLE");
+    expect(JSON.stringify(opponent)).not.toContain("host-secret-removed");
     const publicHost = opponent.players.find((player) => player.playerId === setup.host.credentials.playerId)!;
     expect(publicHost).toMatchObject({
       handCount: hostState.deckState.hand.length,
       drawPileCount: hostState.deckState.drawPile.length,
       discardPileCount: hostState.deckState.discardPile.length,
-      totalDeckCount: 8,
+      totalDeckCount: 9,
+      permanentlyRemovedCount: 1,
     });
   });
 
@@ -220,7 +232,7 @@ describe("private round queue", () => {
     expect(manager.getRoom(setup.roomCode)?.game?.getState().roundNumber).toBe(2);
   });
 
-  it("opens private reward selection after the third round and honors the 30 second timeout", () => {
+  it("opens private two-card reward selection and honors the configured timeout", () => {
     const manager = makeManager();
     const setup = startTwoPlayerGame(manager);
     const room = manager.getRoom(setup.roomCode)!;
@@ -232,19 +244,85 @@ describe("private round queue", () => {
     expect(room.phase).toBe("SELECTING_REWARD");
     const rewardView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
     expect(rewardView.rewardOptions).toHaveLength(3);
-    manager.selectReward(
+    const selectedIds = [
+      rewardView.rewardOptions[0]!.id,
+      rewardView.rewardOptions[2]!.id,
+    ];
+    manager.updateRewardSelection(
       setup.roomCode,
       setup.host.credentials.playerId,
       "socket-1",
-      rewardView.rewardOptions[0]!.id,
+      selectedIds,
     );
+    const draftView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
+    const hiddenFromGuest = manager.getPlayerView(setup.roomCode, setup.guest.credentials.playerId);
+    expect(draftView.selectedRewards.map((card) => card.id)).toEqual(selectedIds);
+    expect(draftView.rewardSelectionConfirmed).toBe(false);
+    expect(JSON.stringify(hiddenFromGuest)).not.toContain(selectedIds[0]);
+    expect(JSON.stringify(hiddenFromGuest)).not.toContain(selectedIds[1]);
+    manager.disconnectSocket("socket-1");
+    const restoredReward = manager.reconnectRoom(setup.host.credentials, "socket-reward");
+    expect(restoredReward.view.selectedRewards.map((card) => card.id)).toEqual(selectedIds);
+    manager.confirmReward(setup.roomCode, setup.host.credentials.playerId, "socket-reward");
     const selectedView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
-    expect(selectedView.selectedReward?.id).toBe(rewardView.rewardOptions[0]!.id);
+    expect(selectedView.selectedRewards.map((card) => card.id)).toEqual(selectedIds);
+    expect(selectedView.rewardSelectionConfirmed).toBe(true);
     expect(selectedView.rewardOptions).toHaveLength(0);
     expect(selectedView.rewardSelectionStatus).toEqual({ selectedPlayerCount: 1, totalPlayerCount: 2 });
     vi.advanceTimersByTime(30_000);
     expect(room.phase).toBe("SELECTING_CARDS");
     expect(room.game!.getState().roundNumber).toBe(4);
+  });
+
+  it("restores multi-card deck trimming state and keeps current reward cards disabled", () => {
+    const manager = makeManager();
+    const setup = startTwoPlayerGame(manager);
+    const room = manager.getRoom(setup.roomCode)!;
+    const state = room.game!.getState();
+    state.roundNumber = 3;
+    for (const player of state.players) {
+      player.deckState.drawPile.push(...Array.from({ length: 4 }, (_, index) => ({
+        instanceId: `${player.id}:legacy-extra:${index}`,
+        cardId: "BASE_GUARD",
+      })));
+    }
+    manager.confirmRound(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
+    manager.confirmRound(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
+    manager.eventsFinished(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
+    manager.eventsFinished(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
+
+    for (const [credentials, socketId] of [
+      [setup.host.credentials, "socket-1"],
+      [setup.guest.credentials, "socket-2"],
+    ] as const) {
+      const reward = manager.getPlayerView(setup.roomCode, credentials.playerId);
+      manager.updateRewardSelection(
+        setup.roomCode,
+        credentials.playerId,
+        socketId,
+        [reward.rewardOptions[0]!.id, reward.rewardOptions[2]!.id],
+      );
+      manager.confirmReward(setup.roomCode, credentials.playerId, socketId);
+    }
+
+    expect(room.phase).toBe("SELECTING_DECK_REMOVAL");
+    const removal = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
+    expect(removal.totalDeckCount).toBe(16);
+    expect(removal.requiredRemovalCount).toBe(1);
+    expect(removal.deckRemovalCards.filter((card) => card.newlyAdded)).toHaveLength(2);
+    expect(removal.deckRemovalCards.filter((card) => card.newlyAdded).every((card) => !card.removable)).toBe(true);
+    const selectedId = removal.deckRemovalCards.find((card) => card.removable)!.instanceId;
+    manager.updateDeckRemoval(
+      setup.roomCode,
+      setup.host.credentials.playerId,
+      "socket-1",
+      [selectedId],
+    );
+    manager.disconnectSocket("socket-1");
+    const restored = manager.reconnectRoom(setup.host.credentials, "socket-trim");
+    expect(restored.view.selectedRemovalInstanceIds).toEqual([selectedId]);
+    expect(restored.view.requiredRemovalCount).toBe(1);
+    expect(restored.view.rewardDeadlineAt).not.toBeNull();
   });
 });
 

@@ -1,10 +1,12 @@
 import {
   GameEngineError,
   ProductionRandomSource,
-  chooseAutomaticDeckRemoval,
+  chooseAutomaticDeckRemovals,
   chooseInitialHand,
   cloneGameState,
+  confirmDeckRemoval as confirmEngineDeckRemoval,
   confirmMissingPlayers,
+  confirmRewardSelection,
   confirmRound,
   createGame,
   haveAllAlivePlayersConfirmed,
@@ -14,10 +16,10 @@ import {
   removeQueuedCard,
   reorderQueuedCards,
   resolveRound,
-  selectDeckRemoval,
   selectRandomPendingRewards,
-  selectReward,
   startRound,
+  updateDeckRemovalSelection,
+  updateRewardSelection,
   type CreatePlayerInput,
   type GameState,
   type QueuedCardAction,
@@ -86,6 +88,7 @@ export class GameSession {
         this.getState(),
         playerId,
         selectedInstanceIds,
+        this.randomSourceFactory(),
       );
       if (!hasPendingInitialHandSelection(this.state)) {
         this.state = startRound(this.state, this.randomSourceFactory());
@@ -217,12 +220,19 @@ export class GameSession {
     }
   }
 
-  chooseReward(playerId: string, cardId: string): void {
+  updateReward(playerId: string, cardIds: string[]): void {
     try {
-      this.state = selectReward(
+      this.state = updateRewardSelection(this.getState(), playerId, cardIds);
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  confirmReward(playerId: string): void {
+    try {
+      this.state = confirmRewardSelection(
         this.getState(),
         playerId,
-        cardId,
         this.randomSourceFactory(),
       );
     } catch (error) {
@@ -241,14 +251,21 @@ export class GameSession {
     }
   }
 
-  removeDeckCard(playerId: string, instanceId: string): void {
+  updateDeckRemoval(playerId: string, instanceIds: string[]): void {
     try {
-      this.state = selectDeckRemoval(
+      this.state = updateDeckRemovalSelection(
         this.getState(),
         playerId,
-        instanceId,
-        this.randomSourceFactory(),
+        instanceIds,
       );
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  confirmDeckRemoval(playerId: string): void {
+    try {
+      this.state = confirmEngineDeckRemoval(this.getState(), playerId);
     } catch (error) {
       asRoomError(error);
     }
@@ -256,15 +273,20 @@ export class GameSession {
 
   removeAutomaticDeckCards(): void {
     let next = this.getState();
-    for (const player of next.players.filter(
-      (candidate) => candidate.alive && candidate.deckState.pendingRemovalRequired,
-    )) {
-      next = selectDeckRemoval(
+    const playerIds = next.players.filter(
+      (candidate) =>
+        candidate.alive
+        && candidate.deckState.requiredRemovalCount > 0
+        && !candidate.deckState.deckRemovalConfirmed,
+    ).map((player) => player.id);
+    for (const playerId of playerIds) {
+      const player = next.players.find((candidate) => candidate.id === playerId)!;
+      next = updateDeckRemovalSelection(
         next,
-        player.id,
-        chooseAutomaticDeckRemoval(player),
-        this.randomSourceFactory(),
+        playerId,
+        chooseAutomaticDeckRemovals(player),
       );
+      next = confirmEngineDeckRemoval(next, playerId);
     }
     this.state = next;
   }

@@ -6,6 +6,7 @@ import {
   CHAT_MESSAGE_MAX_LENGTH,
   CHAT_RATE_MAX_MESSAGES,
   CHAT_RATE_WINDOW_MS,
+  DECK_TRIM_TIMEOUT_MS,
   DISCONNECT_GRACE_MS,
   EVENTS_FINISH_TIMEOUT_MS,
   MAX_ROOM_PLAYERS,
@@ -95,6 +96,7 @@ export type RoomManagerOptions = {
   actionTimeoutMs: number;
   eventsFinishTimeoutMs: number;
   rewardTimeoutMs: number;
+  deckTrimTimeoutMs: number;
   disconnectGraceMs: number;
   abandonedRoomTtlMs: number;
   logger: AppLogger;
@@ -114,6 +116,7 @@ const DEFAULT_OPTIONS: RoomManagerOptions = {
   actionTimeoutMs: ACTION_TIMEOUT_MS,
   eventsFinishTimeoutMs: EVENTS_FINISH_TIMEOUT_MS,
   rewardTimeoutMs: REWARD_TIMEOUT_MS,
+  deckTrimTimeoutMs: DECK_TRIM_TIMEOUT_MS,
   disconnectGraceMs: DISCONNECT_GRACE_MS,
   abandonedRoomTtlMs: ABANDONED_ROOM_TTL_MS,
   logger: noopLogger,
@@ -427,11 +430,26 @@ export class RoomManager {
     }
   }
 
-  selectReward(
+  updateRewardSelection(
     roomCode: string,
     playerId: string,
     socketId: string,
-    cardId: string,
+    cardIds: string[],
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "SELECTING_REWARD" || !room.game) {
+      throw new RoomError("INVALID_GAME_PHASE");
+    }
+    room.game.updateReward(playerId, cardIds);
+    this.touch(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  confirmReward(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
   ): void {
     const room = this.getRoomOrThrow(roomCode);
     this.assertOwnership(room, playerId, socketId);
@@ -439,7 +457,7 @@ export class RoomManager {
       throw new RoomError("INVALID_GAME_PHASE");
     }
     const before = this.playerDeckSize(room, playerId);
-    room.game.chooseReward(playerId, cardId);
+    room.game.confirmReward(playerId);
     this.emit({ type: "REWARD_SELECTED", roomCode: room.roomCode, playerId });
     const after = this.playerDeckSize(room, playerId);
     if (after !== before) {
@@ -448,18 +466,33 @@ export class RoomManager {
     this.afterRewardChoice(room);
   }
 
-  selectDeckRemoval(
+  updateDeckRemoval(
     roomCode: string,
     playerId: string,
     socketId: string,
-    cardInstanceId: string,
+    cardInstanceIds: string[],
   ): void {
     const room = this.getRoomOrThrow(roomCode);
     this.assertOwnership(room, playerId, socketId);
     if (room.phase !== "SELECTING_DECK_REMOVAL" || !room.game) {
       throw new RoomError("INVALID_GAME_PHASE");
     }
-    room.game.removeDeckCard(playerId, cardInstanceId);
+    room.game.updateDeckRemoval(playerId, cardInstanceIds);
+    this.touch(room);
+    this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
+  }
+
+  confirmDeckRemoval(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+  ): void {
+    const room = this.getRoomOrThrow(roomCode);
+    this.assertOwnership(room, playerId, socketId);
+    if (room.phase !== "SELECTING_DECK_REMOVAL" || !room.game) {
+      throw new RoomError("INVALID_GAME_PHASE");
+    }
+    room.game.confirmDeckRemoval(playerId);
     this.emit({
       type: "DECK_UPDATED",
       roomCode: room.roomCode,
@@ -831,13 +864,16 @@ export class RoomManager {
     this.emit({ type: "ROOM_UPDATED", roomCode: room.roomCode });
   }
 
-  private scheduleRewardTimer(room: RoomState): void {
+  private scheduleRewardTimer(
+    room: RoomState,
+    timeoutMs = this.options.rewardTimeoutMs,
+  ): void {
     if (room.timers.reward) clearTimeout(room.timers.reward);
-    room.rewardDeadlineAt = this.options.now() + this.options.rewardTimeoutMs;
+    room.rewardDeadlineAt = this.options.now() + timeoutMs;
     room.timers.reward = setTimeout(
       () => this.runRoomTimer(room, "reward_timeout", () =>
         this.handleRewardTimeout(room.roomCode)),
-      this.options.rewardTimeoutMs,
+      timeoutMs,
     );
   }
 
@@ -852,7 +888,7 @@ export class RoomManager {
     room.timers.reward = null;
     if (phase === "SELECTING_DECK_REMOVAL") {
       room.phase = "SELECTING_DECK_REMOVAL";
-      this.scheduleRewardTimer(room);
+      this.scheduleRewardTimer(room, this.options.deckTrimTimeoutMs);
       this.emit({
         type: "DECK_REMOVAL_REQUIRED",
         roomCode: room.roomCode,

@@ -5,10 +5,12 @@ import {
   CHARACTER_CATALOG,
   GUARDIAN_MAX_HP,
   HP_SCALE,
-  MAX_DECK_SIZE,
+  MAX_TOTAL_DECK_SIZE,
   SequenceRandomSource,
   SeededRandomSource,
   chooseInitialHand,
+  confirmDeckRemoval,
+  confirmRewardSelection,
   confirmRound,
   createGame,
   getAllDeckCards,
@@ -19,9 +21,9 @@ import {
   removeQueuedCard,
   reorderQueuedCards,
   resolveRound,
-  selectDeckRemoval,
-  selectReward,
   startRound,
+  updateDeckRemovalSelection,
+  updateRewardSelection,
   type CharacterClassId,
   type GameState,
   type RandomSource,
@@ -83,7 +85,7 @@ function resolved(
 }
 
 describe("V2 catalogs and deck lifecycle", () => {
-  it("defines four characters, 27 cards, and the exact eight-card base deck", () => {
+  it("defines four characters, 27 cards, and the exact ten-card base deck", () => {
     expect(Object.keys(CHARACTER_CATALOG)).toHaveLength(4);
     expect(Object.keys(CARD_CATALOG)).toHaveLength(27);
     expect(BASE_DECK_CARD_IDS).toEqual([
@@ -94,22 +96,20 @@ describe("V2 catalogs and deck lifecycle", () => {
       "BASE_GUARD",
       "BASE_GUARD",
       "BASE_EVADE",
+      "BASE_EVADE",
+      "BASE_COUNTER",
       "BASE_COUNTER",
     ]);
   });
 
-  it("deals 3 cards, draws one from round 2, caps the hand at 5, and reshuffles discard", () => {
+  it("deals 5 cards, draws only one when below 5, and reshuffles discard", () => {
     let state = selectingState();
     const player = state.players[0]!;
-    expect(player.deckState.hand).toHaveLength(3);
-    expect(getDeckSize(player.deckState)).toBe(8);
+    expect(player.deckState.hand).toHaveLength(5);
+    expect(getDeckSize(player.deckState)).toBe(10);
 
     state.phase = "ROUND_STARTING";
     state = startRound(state, new SeededRandomSource(4));
-    expect(state.players[0]!.deckState.hand).toHaveLength(4);
-
-    state.phase = "ROUND_STARTING";
-    state = startRound(state, new SeededRandomSource(5));
     expect(state.players[0]!.deckState.hand).toHaveLength(5);
 
     state.players[0]!.deckState.drawPile = [];
@@ -125,14 +125,15 @@ describe("V2 catalogs and deck lifecycle", () => {
     ]);
   });
 
-  it("lets Tactician inspect 4 opening cards and keep exactly 3", () => {
+  it("lets Tactician inspect 6 opening cards and keep exactly 5", () => {
     const state = createGame(players(["TACTICIAN", "DUELIST"]), new SeededRandomSource(1));
     const tactician = state.players[0]!;
-    expect(tactician.deckState.pendingInitialHandSelection).toHaveLength(4);
-    const selected = tactician.deckState.pendingInitialHandSelection.slice(0, 3).map((card) => card.instanceId);
-    const chosen = chooseInitialHand(state, tactician.id, selected);
-    expect(chosen.players[0]!.deckState.hand).toHaveLength(3);
-    expect(chosen.players[0]!.deckState.discardPile).toHaveLength(1);
+    expect(tactician.deckState.pendingInitialHandSelection).toHaveLength(6);
+    const selected = tactician.deckState.pendingInitialHandSelection.slice(0, 5).map((card) => card.instanceId);
+    const chosen = chooseInitialHand(state, tactician.id, selected, new SeededRandomSource(2));
+    expect(chosen.players[0]!.deckState.hand).toHaveLength(5);
+    expect(chosen.players[0]!.deckState.drawPile).toHaveLength(5);
+    expect(chosen.players[0]!.deckState.discardPile).toHaveLength(0);
   });
 
   it("applies Guardian 35 HP and the other class passives from data", () => {
@@ -152,20 +153,21 @@ describe("private queue", () => {
     state = addQueue(state, "p1", 1);
     state = addQueue(state, "p1", 2);
     expect(state.players[0]!.deckState.queuedCards).toHaveLength(3);
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 1, 2]);
 
     state = reorderQueuedCards(state, "p1", state.roundNumber, [ids[2]!, ids[0]!, ids[1]!]);
     expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.cardInstanceId)).toEqual([
       ids[2], ids[0], ids[1],
     ]);
     state = removeQueuedCard(state, "p1", state.roundNumber, ids[0]!);
-    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 2]);
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 1]);
 
     const zeroCardPlayer = confirmRound(state, "p2", state.roundNumber);
     expect(zeroCardPlayer.players[1]!.deckState.confirmed).toBe(true);
     expect(zeroCardPlayer.players[1]!.deckState.queuedCards).toEqual([]);
   });
 
-  it("reserves an explicit stage and moves it with button-friendly slot swaps", () => {
+  it("always appends to the first open order and keeps edited order contiguous", () => {
     let state = selectingState();
     setHand(state, "p1", ["BASE_GUARD", "BASE_QUICK_STRIKE"]);
     const [guard, attack] = state.players[0]!.deckState.hand;
@@ -180,11 +182,14 @@ describe("private queue", () => {
       order: 0,
       additionalSelection: null,
     });
-    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 2]);
-    state = moveQueuedCard(state, "p1", state.roundNumber, attack!.instanceId, 0);
     expect(state.players[0]!.deckState.queuedCards.map((queued) => [queued.cardInstanceId, queued.order])).toEqual([
       [attack!.instanceId, 0],
-      [guard!.instanceId, 2],
+      [guard!.instanceId, 1],
+    ]);
+    state = moveQueuedCard(state, "p1", state.roundNumber, guard!.instanceId, 0);
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => [queued.cardInstanceId, queued.order])).toEqual([
+      [guard!.instanceId, 0],
+      [attack!.instanceId, 1],
     ]);
   });
 
@@ -328,43 +333,93 @@ describe("step resolver", () => {
   });
 });
 
-describe("reward and deck replacement", () => {
-  it("offers 2 class + 1 common unique cards and grows 8→9→10", () => {
+describe("reward and permanent deck trimming", () => {
+  function confirmTwoRewards(state: GameState, seed: number): GameState {
+    const options = state.players[0]!.deckState.pendingRewardOptions;
+    let next = updateRewardSelection(state, "p1", [options[0]!, options[2]!]);
+    next = confirmRewardSelection(next, "p1", new SeededRandomSource(seed));
+    return next;
+  }
+
+  it("offers 2 class + 1 common and requires exactly two selections", () => {
     let state = selectingState();
     state.players[1]!.alive = false;
     state = prepareRewardOptions(state, new SeededRandomSource(30));
-    let options = state.players[0]!.deckState.pendingRewardOptions;
+    const options = state.players[0]!.deckState.pendingRewardOptions;
     expect(new Set(options).size).toBe(3);
     expect(options.filter((id) => CARD_CATALOG[id]!.classId === "DUELIST")).toHaveLength(2);
     expect(options.filter((id) => CARD_CATALOG[id]!.classId === "COMMON")).toHaveLength(1);
-    state = selectReward(state, "p1", options[0]!, new SeededRandomSource(31));
-    expect(getDeckSize(state.players[0]!.deckState)).toBe(9);
-
-    state = prepareRewardOptions(state, new SeededRandomSource(32));
-    options = state.players[0]!.deckState.pendingRewardOptions;
-    state = selectReward(state, "p1", options[0]!, new SeededRandomSource(33));
-    expect(getDeckSize(state.players[0]!.deckState)).toBe(MAX_DECK_SIZE);
+    expect(() => confirmRewardSelection(state, "p1", new SeededRandomSource(31))).toThrow("INVALID_REWARD_SELECTION");
+    const one = updateRewardSelection(state, "p1", [options[0]!]);
+    expect(() => confirmRewardSelection(one, "p1", new SeededRandomSource(31))).toThrow("INVALID_REWARD_SELECTION");
+    expect(() => updateRewardSelection(state, "p1", options)).toThrow("INVALID_REWARD_SELECTION");
+    state = confirmTwoRewards(state, 31);
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(12);
+    expect(state.players[0]!.deckState.selectedRewardCardIds).toEqual([options[0], options[2]]);
   });
 
-  it("requires an old-card removal at size 10 and keeps at least one attack", () => {
+  it("grows 10→12→14, trims 16→15, then trims 17→15", () => {
     let state = selectingState();
-    const player = state.players[0]!;
-    player.deckState.drawPile.push(
-      { instanceId: "bonus-1", cardId: "COMMON_FIRST_AID" },
-      { instanceId: "bonus-2", cardId: "COMMON_QUICK_SUPPLY" },
-    );
     state.players[1]!.alive = false;
-    state = prepareRewardOptions(state, new SeededRandomSource(40));
-    const reward = state.players[0]!.deckState.pendingRewardOptions[0]!;
-    state = selectReward(state, "p1", reward, new SeededRandomSource(41));
+    for (const [prepareSeed, confirmSeed] of [[40, 41], [42, 43]] as const) {
+      state = prepareRewardOptions(state, new SeededRandomSource(prepareSeed));
+      state = confirmTwoRewards(state, confirmSeed);
+    }
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(14);
+
+    state = prepareRewardOptions(state, new SeededRandomSource(44));
+    state = confirmTwoRewards(state, 45);
     expect(state.phase).toBe("SELECTING_DECK_REMOVAL");
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(16);
+    expect(state.players[0]!.deckState.requiredRemovalCount).toBe(1);
+    const newIds = [...state.players[0]!.deckState.newlyAddedCardInstanceIds];
+    expect(() => updateDeckRemovalSelection(state, "p1", [newIds[0]!])).toThrow("INVALID_DECK_REMOVAL");
     const oldCard = getAllDeckCards(state.players[0]!.deckState).find(
       (card) => card.cardId === "BASE_GUARD",
     )!;
-    state = selectDeckRemoval(state, "p1", oldCard.instanceId, new SeededRandomSource(42));
-    expect(getDeckSize(state.players[0]!.deckState)).toBe(10);
+    state = updateDeckRemovalSelection(state, "p1", [oldCard.instanceId]);
+    state = confirmDeckRemoval(state, "p1");
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(MAX_TOTAL_DECK_SIZE);
+    expect(state.players[0]!.deckState.permanentlyRemovedCards).toContainEqual(oldCard);
     expect(getAllDeckCards(state.players[0]!.deckState).some((card) =>
       CARD_CATALOG[card.cardId]!.category === "ATTACK")).toBe(true);
     expect(state.phase).toBe("ROUND_STARTING");
+
+    state = prepareRewardOptions(state, new SeededRandomSource(46));
+    state = confirmTwoRewards(state, 47);
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(17);
+    expect(state.players[0]!.deckState.requiredRemovalCount).toBe(2);
+    const candidates = getAllDeckCards(state.players[0]!.deckState).filter(
+      (card) => !state.players[0]!.deckState.newlyAddedCardInstanceIds.includes(card.instanceId),
+    ).slice(0, 2);
+    state = updateDeckRemovalSelection(state, "p1", candidates.map((card) => card.instanceId));
+    state = confirmDeckRemoval(state, "p1");
+    expect(getDeckSize(state.players[0]!.deckState)).toBe(15);
+    expect(state.players[0]!.deckState.permanentlyRemovedCards).toHaveLength(3);
+  });
+
+  it("never reshuffles permanently removed cards and does not refill a trimmed hand", () => {
+    let state = selectingState();
+    state.players[1]!.alive = false;
+    const player = state.players[0]!;
+    player.deckState.drawPile.push(
+      { instanceId: "extra-1", cardId: "COMMON_FIRST_AID" },
+      { instanceId: "extra-2", cardId: "COMMON_QUICK_SUPPLY" },
+      { instanceId: "extra-3", cardId: "COMMON_GAMBLE" },
+      { instanceId: "extra-4", cardId: "COMMON_SMOKE_EVADE" },
+      { instanceId: "extra-5", cardId: "COMMON_REINFORCED_GUARD" },
+    );
+    state = prepareRewardOptions(state, new SeededRandomSource(50));
+    state = confirmTwoRewards(state, 51);
+    const handCard = state.players[0]!.deckState.hand[0]!;
+    const oldDrawCard = state.players[0]!.deckState.drawPile.find(
+      (card) => !state.players[0]!.deckState.newlyAddedCardInstanceIds.includes(card.instanceId),
+    )!;
+    const beforeHand = state.players[0]!.deckState.hand.length;
+    state = updateDeckRemovalSelection(state, "p1", [handCard.instanceId, oldDrawCard.instanceId]);
+    state = confirmDeckRemoval(state, "p1");
+    expect(state.players[0]!.deckState.hand).toHaveLength(beforeHand - 1);
+    expect(getAllDeckCards(state.players[0]!.deckState)).not.toContainEqual(handCard);
+    expect(state.players[0]!.deckState.permanentlyRemovedCards).toContainEqual(handCard);
   });
 });

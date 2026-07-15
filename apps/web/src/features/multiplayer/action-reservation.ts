@@ -42,9 +42,3 @@ export function getReservationLabels(
   }
   return names;
 }
-
-export function firstFreeActionStage(view: PlayerGameView): 0 | 1 | 2 | null {
-  return ([0, 1, 2] as const).find((order) =>
-    !view.myQueuedCards.some((queued) => queued.order === order)
-  ) ?? null;
-}

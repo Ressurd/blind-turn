@@ -24,6 +24,8 @@ export function createPublicSnapshot(state: GameState): PublicGameSnapshot {
         player.deckState.hand.length
         + player.deckState.drawPile.length
         + player.deckState.discardPile.length,
+      permanentlyRemovedCount:
+        player.deckState.permanentlyRemovedCards.length,
     })),
     result: state.result ? { ...state.result } : null,
   };

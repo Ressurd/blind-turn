@@ -16,6 +16,17 @@ export class GameEngineError extends Error {
   }
 }
 
+function reindexQueuedCards(player: PlayerState): void {
+  player.deckState.queuedCards.forEach((queued, order) => {
+    queued.order = order as 0 | 1 | 2;
+  });
+}
+
+function compactQueuedCards(player: PlayerState): void {
+  player.deckState.queuedCards.sort((left, right) => left.order - right.order);
+  reindexQueuedCards(player);
+}
+
 function requireSelectingPlayer(
   state: GameState,
   playerId: string,
@@ -119,6 +130,7 @@ export function queueCard(
 ): GameState {
   const next = cloneGameState(state);
   const player = requireSelectingPlayer(next, playerId, roundNumber);
+  compactQueuedCards(player);
   if (player.deckState.queuedCards.length >= MAX_CARDS_PER_ROUND) {
     throw new GameEngineError("MAX_QUEUED_CARDS_EXCEEDED");
   }
@@ -148,16 +160,7 @@ export function queueCard(
   const definition = getCardDefinition(card.cardId);
   validateTarget(next, player, definition.targetType, input.targetPlayerId);
   validateAdditionalSelection(player, card.cardId, input.additionalSelection);
-  const order = input.order
-    ?? ([0, 1, 2].find((candidate) =>
-      !player.deckState.queuedCards.some((queued) => queued.order === candidate)
-    ) as 0 | 1 | 2 | undefined);
-  if (
-    order === undefined
-    || player.deckState.queuedCards.some((queued) => queued.order === order)
-  ) {
-    throw new GameEngineError("INVALID_QUEUE_ORDER");
-  }
+  const order = player.deckState.queuedCards.length as 0 | 1 | 2;
   player.deckState.queuedCards.push({
     cardInstanceId: input.cardInstanceId,
     order,
@@ -181,6 +184,7 @@ export function removeQueuedCard(
   );
   if (index < 0) throw new GameEngineError("CARD_NOT_IN_HAND");
   player.deckState.queuedCards.splice(index, 1);
+  compactQueuedCards(player);
   return next;
 }
 
@@ -193,16 +197,17 @@ export function moveQueuedCard(
 ): GameState {
   const next = cloneGameState(state);
   const player = requireSelectingPlayer(next, playerId, roundNumber);
-  const moving = player.deckState.queuedCards.find(
+  compactQueuedCards(player);
+  const movingIndex = player.deckState.queuedCards.findIndex(
     (queued) => queued.cardInstanceId === cardInstanceId,
   );
-  if (!moving) throw new GameEngineError("CARD_NOT_IN_HAND");
-  const occupied = player.deckState.queuedCards.find(
-    (queued) => queued.order === order,
-  );
-  if (occupied) occupied.order = moving.order;
-  moving.order = order;
-  player.deckState.queuedCards.sort((left, right) => left.order - right.order);
+  if (movingIndex < 0) throw new GameEngineError("CARD_NOT_IN_HAND");
+  if (order >= player.deckState.queuedCards.length) {
+    throw new GameEngineError("INVALID_QUEUE_ORDER");
+  }
+  const [moving] = player.deckState.queuedCards.splice(movingIndex, 1);
+  player.deckState.queuedCards.splice(order, 0, moving!);
+  reindexQueuedCards(player);
   return next;
 }
 
@@ -240,6 +245,7 @@ export function confirmRound(
 ): GameState {
   const next = cloneGameState(state);
   const player = requireSelectingPlayer(next, playerId, roundNumber);
+  compactQueuedCards(player);
   player.deckState.confirmed = true;
   return next;
 }

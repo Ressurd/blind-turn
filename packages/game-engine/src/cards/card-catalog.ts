@@ -298,6 +298,8 @@ export const BASE_DECK_CARD_IDS = [
   "BASE_GUARD",
   "BASE_GUARD",
   "BASE_EVADE",
+  "BASE_EVADE",
+  "BASE_COUNTER",
   "BASE_COUNTER",
 ] as const;
 

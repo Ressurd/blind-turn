@@ -7,13 +7,14 @@ import {
   type PrivateDeckCardSummary,
 } from "@blind-turn/shared";
 
-export type DeckInspectorMode = "hand" | "draw" | "discard" | "all";
+export type DeckInspectorMode = "hand" | "draw" | "discard" | "all" | "removed";
 
 const MODE_COPY: Record<DeckInspectorMode, { eyebrow: string; title: string; description: string }> = {
   hand: { eyebrow: "PRIVATE HAND", title: "손패", description: "현재 손에 있는 카드와 예약 상태입니다." },
   draw: { eyebrow: "PRIVATE DRAW PILE", title: "남은 덱", description: "카드 종류와 수량만 표시됩니다. 드로우 순서는 알 수 없습니다." },
   discard: { eyebrow: "PRIVATE GRAVE", title: "무덤 · 버린 카드", description: "사용하거나 버린 카드의 현재 구성입니다." },
   all: { eyebrow: "FULL DECK", title: "전체 덱", description: "손패·덱·무덤·예약 중인 카드를 위치별로 합산합니다." },
+  removed: { eyebrow: "PERMANENTLY REMOVED", title: "제거된 카드", description: "덱 정리에서 영구 제거되어 다시 섞이지 않는 카드입니다." },
 };
 
 const TARGET_LABEL: Record<CardDefinition["targetType"], string> = {
@@ -27,6 +28,8 @@ function SummaryCard({ summary, mode }: { summary: PrivateDeckCardSummary; mode:
     ? summary.drawPileCount
     : mode === "discard"
       ? summary.discardPileCount
+      : mode === "removed"
+        ? summary.removedCount
       : summary.totalCount;
   return (
     <article className={`deckInspectCard card-${summary.definition.category.toLowerCase()}`}>
@@ -58,7 +61,9 @@ export function DeckInspector(props: {
     ? props.view.myDrawPileSummary
     : props.mode === "discard"
       ? props.view.myDeckSummary.filter((summary) => summary.discardPileCount > 0)
-      : props.view.myDeckSummary;
+      : props.mode === "removed"
+        ? props.view.myDeckSummary.filter((summary) => summary.removedCount > 0)
+        : props.view.myDeckSummary.filter((summary) => summary.totalCount > 0);
 
   return (
     <div
@@ -80,7 +85,7 @@ export function DeckInspector(props: {
           >닫기</button>
         </header>
         <nav aria-label="카드 위치">
-          {(["hand", "draw", "discard", "all"] as const).map((mode) => (
+          {(["hand", "draw", "discard", "all", "removed"] as const).map((mode) => (
             <button type="button" key={mode} className={props.mode === mode ? "selected" : ""} onClick={() => props.onModeChange(mode)}>
               {MODE_COPY[mode].title}
             </button>
@@ -91,6 +96,7 @@ export function DeckInspector(props: {
           <span>덱 <b>{props.view.drawPileCount}장</b></span>
           <span>무덤 <b>{props.view.discardPileCount}장</b></span>
           <span>전체 덱 <b>{props.view.totalDeckCount} / {props.view.maxDeckSize}</b></span>
+          <span>제거됨 <b>{props.view.permanentlyRemovedCount}장</b></span>
         </div>
         {props.mode === "hand" ? (
           <div className="deckInspectGrid">

@@ -7,8 +7,8 @@ import {
   RemoveQueuedCardPayloadSchema,
   ReorderQueuedCardsPayloadSchema,
   RoomCodePayloadSchema,
-  SelectDeckRemovalPayloadSchema,
-  SelectRewardPayloadSchema,
+  UpdateDeckRemovalPayloadSchema,
+  UpdateRewardSelectionPayloadSchema,
 } from "@blind-turn/shared";
 import type { AppLogger } from "../logging/logger";
 import type { RoomManager } from "../rooms/room-manager";
@@ -122,24 +122,51 @@ export function registerGameEvents(
     }, logger);
   });
 
-  socket.on("game:select-reward", (payload, ack) => {
+  socket.on("game:update-reward-selection", (payload, ack) => {
     runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(SelectRewardPayloadSchema, payload);
+      const parsed = parsePayload(UpdateRewardSelectionPayloadSchema, payload);
       const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.selectReward(parsed.roomCode, session.playerId, socket.id, parsed.cardId);
+      roomManager.updateRewardSelection(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
+        parsed.selectedCardIds,
+      );
       return { accepted: true as const };
     }, logger);
   });
 
-  socket.on("game:select-deck-removal", (payload, ack) => {
+  socket.on("game:confirm-reward", (payload, ack) => {
     runSocketRequest(socket, "game", ack, () => {
-      const parsed = parsePayload(SelectDeckRemovalPayloadSchema, payload);
+      const parsed = parsePayload(RoomCodePayloadSchema, payload);
       const session = requireSocketSession(socket, parsed.roomCode);
-      roomManager.selectDeckRemoval(
+      roomManager.confirmReward(parsed.roomCode, session.playerId, socket.id);
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:update-deck-removal", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(UpdateDeckRemovalPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.updateDeckRemoval(
         parsed.roomCode,
         session.playerId,
         socket.id,
-        parsed.cardInstanceId,
+        parsed.selectedInstanceIds,
+      );
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:confirm-deck-removal", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(RoomCodePayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.confirmDeckRemoval(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
       );
       return { accepted: true as const };
     }, logger);

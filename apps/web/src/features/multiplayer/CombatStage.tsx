@@ -1,17 +1,26 @@
 "use client";
 
 import { CHARACTER_CATALOG, formatHp, type RoomPlayerView } from "@blind-turn/shared";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   describeCombatSequence,
   type CombatDisplayState,
   type CombatSequence,
 } from "./combat-sequence";
-import type {
-  CombatPlaybackSpeed,
-  CombatPlaybackStage,
-  CombatStatusState,
+import {
+  getPlaybackDuration,
+  type CombatPlaybackSpeed,
+  type CombatPlaybackStage,
+  type CombatStatusState,
 } from "./use-combat-playback";
+/*
+ * CombatStage receives the controller's current duration so CSS and the
+ * playback timer always finish on the same beat.
+ */
+type PlaybackStyle = CSSProperties & {
+  "--playback-stage-duration": string;
+  "--playback-beat-duration": string;
+};
 
 type CombatStageProps = {
   players: RoomPlayerView[];
@@ -20,10 +29,12 @@ type CombatStageProps = {
   displayState: CombatDisplayState;
   sequence: CombatSequence | null;
   stage: CombatPlaybackStage;
+  clashAttemptIndex: number;
   statuses: CombatStatusState;
   isPlaying: boolean;
   isPaused: boolean;
   speed: CombatPlaybackSpeed;
+  durationMs: number;
   onTogglePause: () => void;
   onSpeedChange: (speed: CombatPlaybackSpeed) => void;
   onSkip: () => void;
@@ -35,10 +46,125 @@ type CombatStageProps = {
 
 type Line = { x1: number; y1: number; x2: number; y2: number };
 
+const CLASH_RESULT_STAGES: CombatPlaybackStage[] = [
+  "clash-first-result",
+  "clash-second-roll",
+  "clash-second-result",
+  "clash-modifiers",
+  "clash-compare",
+  "clash-tie",
+  "clash-winner",
+  "impact",
+  "damage",
+  "death",
+  "summary",
+  "transition",
+];
+
+const CLASH_SECOND_RESULT_STAGES: CombatPlaybackStage[] = [
+  "clash-second-result",
+  "clash-modifiers",
+  "clash-compare",
+  "clash-tie",
+  "clash-winner",
+  "impact",
+  "damage",
+  "death",
+  "summary",
+  "transition",
+];
+
+function signed(value: number): string {
+  return value >= 0 ? `+${value}` : String(value);
+}
+
+function rouletteFrames(result: number, offset: number): number[] {
+  return [0, 1, 2, 3, 4].map((index) => ((result + offset + index * 3) % 10) + 1).concat(result);
+}
+
+function ClashNumber(props: { roll: number; rolling: boolean; revealed: boolean; offset: number }) {
+  if (props.rolling) {
+    return (
+      <div className="clashRoulette" aria-label="주사위 굴리는 중">
+        <div className="clashRouletteTrack">
+          {rouletteFrames(props.roll, props.offset).map((value, index) => <span key={`${value}-${index}`}>{value}</span>)}
+        </div>
+      </div>
+    );
+  }
+  return <strong className="clashFixedNumber">{props.revealed ? props.roll : "?"}</strong>;
+}
+
+function ClashDisplay(props: {
+  sequence: CombatSequence;
+  stage: CombatPlaybackStage;
+  attemptIndex: number;
+  names: Record<string, string>;
+}) {
+  const clash = props.sequence.clash;
+  if (!clash?.attempts.length) return null;
+  const attempt = clash.attempts[props.attemptIndex] ?? clash.attempts.at(-1)!;
+  const [firstParticipant, secondParticipant] = clash.participants;
+  const [firstRoll, secondRoll] = attempt.rolls;
+  const firstRolling = props.stage === "clash-first-roll";
+  const secondRolling = props.stage === "clash-second-roll";
+  const firstRevealed = CLASH_RESULT_STAGES.includes(props.stage);
+  const secondRevealed = CLASH_SECOND_RESULT_STAGES.includes(props.stage);
+  const showModifiers = ["clash-modifiers", "clash-compare", "clash-tie", "clash-winner", "impact", "damage", "death", "summary", "transition"].includes(props.stage);
+  const showComparison = ["clash-compare", "clash-tie", "clash-winner", "impact", "damage", "death", "summary", "transition"].includes(props.stage);
+  const showWinner = ["clash-winner", "impact", "damage", "death", "summary", "transition"].includes(props.stage);
+  const isFirstActive = firstRolling || props.stage === "clash-first-result";
+  const isSecondActive = secondRolling || props.stage === "clash-second-result";
+
+  const participant = (
+    side: "first" | "second",
+    entry: typeof firstParticipant,
+    roll: typeof firstRoll,
+    active: boolean,
+    rolling: boolean,
+    revealed: boolean,
+  ) => (
+    <article className={[
+      "clashParticipant",
+      active ? "active" : "",
+      showWinner && props.sequence.winnerId === entry.playerId ? "winner" : "",
+      showWinner && props.sequence.loserId === entry.playerId ? "loser" : "",
+    ].filter(Boolean).join(" ")}>
+      <header><strong>{props.names[entry.playerId]}</strong><span>{entry.cardName}</span></header>
+      <ClashNumber roll={roll.roll} rolling={rolling} revealed={revealed} offset={side === "first" ? 1 : 5} />
+      {showModifiers ? (
+        <dl className="clashModifiers">
+          <div><dt>주사위</dt><dd>{roll.roll}</dd></div>
+          <div><dt>카드 보정</dt><dd>{signed(roll.cardBonus ?? 0)}</dd></div>
+          <div><dt>캐릭터 보정</dt><dd>{signed(roll.characterBonus ?? 0)}</dd></div>
+          <div className="total"><dt>최종</dt><dd>{roll.total}</dd></div>
+        </dl>
+      ) : null}
+    </article>
+  );
+
+  return (
+    <div className="clashDisplay" aria-label={`합 ${attempt.attemptNumber}회차`}>
+      {attempt.attemptNumber > 1 ? <p className="clashRematch">재대결 {attempt.attemptNumber}회차</p> : null}
+      <div className="clashParticipants">
+        {participant("first", firstParticipant, firstRoll, isFirstActive, firstRolling, firstRevealed)}
+        <div className="clashVersus">
+          <span>VS</span>
+          {showComparison ? <strong>{firstRoll.total} : {secondRoll.total}</strong> : null}
+        </div>
+        {participant("second", secondParticipant, secondRoll, isSecondActive, secondRolling, secondRevealed)}
+      </div>
+      {props.stage === "clash-tie" ? <strong className="clashOutcome tie">무승부! 다시 굴립니다.</strong> : null}
+      {showWinner ? <strong className="clashOutcome">{props.names[props.sequence.winnerId ?? ""] ?? "플레이어"} 승리!</strong> : null}
+    </div>
+  );
+}
+
 function presentation(
   sequence: CombatSequence | null,
   stage: CombatPlaybackStage,
   names: Record<string, string>,
+  clashAttemptIndex: number,
 ): { eyebrow: string; title: string; detail: string; tone: string } {
   const name = (id: string | null | undefined) => id ? names[id] ?? "플레이어" : "플레이어";
   if (!sequence) return {
@@ -62,6 +188,12 @@ function presentation(
   if (sequence.type === "DECK" || stage.startsWith("reshuffle") || stage === "draw") {
     const reshuffle = sequence.reshuffles[0];
     const draw = sequence.draws[0];
+    if (stage === "step-intro") return {
+      eyebrow: "DECK UPDATE",
+      title: reshuffle ? "덱 소진을 확인합니다" : "드로우를 준비합니다",
+      detail: reshuffle ? "무덤 카드만 새 덱으로 돌아갑니다." : "카드 종류와 순서는 공개되지 않습니다.",
+      tone: "deck",
+    };
     if (stage === "reshuffle-start") return {
       eyebrow: "DECK EMPTY",
       title: "덱이 비었습니다",
@@ -94,24 +226,82 @@ function presentation(
     tone: "result",
   };
   const step = `${(sequence.stepIndex ?? 0) + 1}단계`;
+  if (stage === "step-intro") return {
+    eyebrow: `${step} · START`,
+    title: `${step} 판정을 시작합니다`,
+    detail: "모든 플레이어의 같은 단계 카드를 한 번에 공개합니다.",
+    tone: "action",
+  };
   if (stage === "reveal") return {
     eyebrow: `${step} · CARD REVEAL`,
     title: sequence.cards.map((card) => `${name(card.playerId)} · ${card.cardName}`).join("  /  ") || "행동 취소",
     detail: "같은 단계의 행동은 동시에 판정됩니다.",
     tone: "action",
   };
+  if (sequence.outcome === "CLASH" && sequence.clash?.attempts.length) {
+    const attempt = sequence.clash.attempts[clashAttemptIndex] ?? sequence.clash.attempts.at(-1)!;
+    const [first, second] = sequence.clash.participants;
+    if (stage === "clash-intro") return {
+      eyebrow: `${step} · CLASH`,
+      title: "합 발생!",
+      detail: `${name(first.playerId)}와 ${name(second.playerId)}의 공격이 맞부딪칩니다.`,
+      tone: "clash",
+    };
+    if (stage === "clash-first-roll") return {
+      eyebrow: `${step} · CLASH ${attempt.attemptNumber}`,
+      title: `${name(first.playerId)}의 합 주사위`,
+      detail: "첫 번째 플레이어의 주사위를 굴립니다.",
+      tone: "clash",
+    };
+    if (stage === "clash-first-result") return {
+      eyebrow: `${step} · FIRST RESULT`,
+      title: `${name(first.playerId)} · 주사위 ${attempt.rolls[0].roll}`,
+      detail: "첫 번째 결과가 확정되었습니다.",
+      tone: "clash",
+    };
+    if (stage === "clash-second-roll") return {
+      eyebrow: `${step} · CLASH ${attempt.attemptNumber}`,
+      title: `${name(second.playerId)}의 합 주사위`,
+      detail: "두 번째 플레이어의 주사위를 굴립니다.",
+      tone: "clash",
+    };
+    if (stage === "clash-second-result") return {
+      eyebrow: `${step} · SECOND RESULT`,
+      title: `${name(second.playerId)} · 주사위 ${attempt.rolls[1].roll}`,
+      detail: "두 번째 결과가 확정되었습니다.",
+      tone: "clash",
+    };
+    if (stage === "clash-modifiers") return {
+      eyebrow: `${step} · MODIFIERS`,
+      title: "보정값을 적용합니다",
+      detail: "기본 주사위와 카드·캐릭터 보정을 각각 확인하세요.",
+      tone: "clash",
+    };
+    if (stage === "clash-compare") return {
+      eyebrow: `${step} · FINAL COMPARE`,
+      title: `${name(first.playerId)} ${attempt.rolls[0].total}  VS  ${attempt.rolls[1].total} ${name(second.playerId)}`,
+      detail: attempt.tied ? "최종값이 같습니다." : "두 최종값을 비교합니다.",
+      tone: "clash",
+    };
+    if (stage === "clash-tie") return {
+      eyebrow: `${step} · DRAW`,
+      title: "무승부! 다시 굴립니다.",
+      detail: `다음은 재대결 ${attempt.attemptNumber + 1}회차입니다.`,
+      tone: "clash",
+    };
+    if (stage === "clash-winner") return {
+      eyebrow: `${step} · CLASH WINNER`,
+      title: `${name(sequence.winnerId)} 승리!`,
+      detail: "승패를 확인한 뒤 피해를 적용합니다.",
+      tone: "success",
+    };
+  }
   if (stage === "roll") {
     if (sequence.outcome === "COUNTER") return {
       eyebrow: `${step} · COUNTER`,
       title: "반격 발동!",
       detail: `${name(sequence.counterActorId)}의 반격이 공격 방향을 뒤집습니다.`,
       tone: "counter",
-    };
-    if (sequence.outcome === "CLASH") return {
-      eyebrow: `${step} · CLASH`,
-      title: `${name(sequence.winnerId)} 합 승리`,
-      detail: "주사위 + 카드 보너스 + 캐릭터 보너스를 비교했습니다.",
-      tone: "clash",
     };
     return {
       eyebrow: `${step} · EVADE CHECK`,
@@ -120,10 +310,18 @@ function presentation(
       tone: sequence.outcome === "EVADE_FAILURE" ? "danger" : "success",
     };
   }
+  if (stage === "focus") return {
+    eyebrow: `${step} · TARGET`,
+    title: `${name(sequence.actorId)}의 행동`,
+    detail: sequence.targetIds.length > 0
+      ? `대상 · ${sequence.targetIds.map((id) => name(id)).join(" · ")}`
+      : "자신 또는 대상 없는 행동입니다.",
+    tone: "action",
+  };
   if (stage === "impact") return {
     eyebrow: `${step} · IMPACT`,
-    title: sequence.outcome === "EVADE_SUCCESS" ? "공격을 피했습니다!" : "공격 적중!",
-    detail: sequence.outcome === "COUNTER" ? "공격은 취소되고 반격 피해가 동시에 적용됩니다." : "피해 결과를 적용합니다.",
+    title: sequence.outcome === "EVADE_SUCCESS" ? "공격을 피했습니다!" : sequence.outcome === "CLASH" ? `${name(sequence.winnerId)}의 공격!` : "공격 적중!",
+    detail: sequence.outcome === "COUNTER" ? "공격은 취소되고 반격 피해가 동시에 적용됩니다." : sequence.outcome === "CLASH" ? `${name(sequence.loserId)} 방향으로 승자의 공격이 이어집니다.` : "피해 결과를 적용합니다.",
     tone: sequence.outcome === "EVADE_SUCCESS" ? "success" : "danger",
   };
   if (stage === "damage") {
@@ -145,6 +343,12 @@ function presentation(
     detail: "다음 단계의 예약 행동은 취소됩니다.",
     tone: "death",
   };
+  if (stage === "transition") return {
+    eyebrow: `${step} · NEXT`,
+    title: "다음 단계로 이동합니다",
+    detail: "현재 단계의 결과가 모두 반영되었습니다.",
+    tone: "result",
+  };
   return {
     eyebrow: `${step} · RESULT`,
     title: describeCombatSequence(sequence, names),
@@ -161,7 +365,7 @@ export function CombatStage(props: CombatStageProps) {
     () => Object.fromEntries(props.players.map((player) => [player.playerId, player.nickname])),
     [props.players],
   );
-  const copy = presentation(props.sequence, props.stage, names);
+  const copy = presentation(props.sequence, props.stage, names, props.clashAttemptIndex);
   const selectedTargetId = props.selectionEnabled ? props.selectedPlayerId ?? null : null;
   const sourceId = props.isPlaying
     ? props.sequence?.actorId ?? null
@@ -172,7 +376,7 @@ export function CombatStage(props: CombatStageProps) {
     ? props.sequence?.targetIds[0] ?? null
     : selectedTargetId;
   const showLine = Boolean(sourceId && targetId) && (
-    (props.isPlaying && ["reveal", "roll", "impact", "damage"].includes(props.stage))
+    (props.isPlaying && ["focus", "roll", "impact", "damage"].includes(props.stage))
     || (!props.isPlaying && props.selectionEnabled)
   );
 
@@ -206,7 +410,14 @@ export function CombatStage(props: CombatStageProps) {
   }, [showLine, sourceId, targetId, props.players.length]);
 
   return (
-    <section className={`combatStage combat-tone-${copy.tone}`} aria-live="polite">
+    <section
+      className={`combatStage combat-tone-${copy.tone}`}
+      aria-live="polite"
+      style={{
+        "--playback-stage-duration": `${props.durationMs || getPlaybackDuration(1, props.speed)}ms`,
+        "--playback-beat-duration": `${getPlaybackDuration(1, props.speed)}ms`,
+      } as PlaybackStyle}
+    >
       <header className="combatStageHeader">
         <div>
           <p className="eyebrow">{copy.eyebrow}</p>
@@ -232,10 +443,10 @@ export function CombatStage(props: CombatStageProps) {
         </div>
       </header>
 
-      {props.sequence?.cards.length ? (
+      {props.sequence?.cards.length && props.stage !== "step-intro" ? (
         <div className="combatReveals">
-          {props.sequence.cards.map((card, index) => (
-            <div key={card.cardInstanceId} style={{ animationDelay: `${index * (700 / props.speed)}ms` }}>
+          {props.sequence.cards.map((card) => (
+            <div key={card.cardInstanceId}>
               <span>{names[card.playerId]}</span>
               <strong>{card.cardName}</strong>
               {card.targetPlayerId ? <small>→ {names[card.targetPlayerId]}</small> : null}
@@ -244,7 +455,16 @@ export function CombatStage(props: CombatStageProps) {
         </div>
       ) : null}
 
-      {props.sequence?.rolls.length ? (
+      {props.sequence?.outcome === "CLASH" && !["step-intro", "reveal"].includes(props.stage) ? (
+        <ClashDisplay
+          sequence={props.sequence}
+          stage={props.stage}
+          attemptIndex={props.clashAttemptIndex}
+          names={names}
+        />
+      ) : null}
+
+      {props.sequence?.outcome !== "CLASH" && props.sequence?.rolls.length && ["roll", "damage", "death", "summary", "transition"].includes(props.stage) ? (
         <div className="combatRolls">
           {props.sequence.rolls.map((roll, index) => (
             <div key={`${roll.playerId}-${roll.kind}-${index}`}>
@@ -289,8 +509,24 @@ export function CombatStage(props: CombatStageProps) {
           {props.players.map((player) => {
             const shown = props.displayState[player.playerId] ?? player;
             const maxHp = shown.maxHp ?? player.maxHp;
-            const actor = props.sequence?.actorIds.includes(player.playerId) ?? false;
-            const target = props.sequence?.targetIds.includes(player.playerId) ?? false;
+            let actor = props.sequence?.actorIds.includes(player.playerId) ?? false;
+            let target = props.sequence?.targetIds.includes(player.playerId) ?? false;
+            const clash = props.sequence?.outcome === "CLASH" ? props.sequence.clash : null;
+            if (clash) {
+              if (["clash-first-roll", "clash-first-result"].includes(props.stage)) {
+                actor = clash.participants[0].playerId === player.playerId;
+                target = false;
+              } else if (["clash-second-roll", "clash-second-result"].includes(props.stage)) {
+                actor = clash.participants[1].playerId === player.playerId;
+                target = false;
+              } else if (["clash-winner", "impact", "damage", "death", "summary", "transition"].includes(props.stage)) {
+                actor = props.sequence?.winnerId === player.playerId;
+                target = props.sequence?.loserId === player.playerId;
+              } else {
+                actor = clash.participants.some((entry) => entry.playerId === player.playerId);
+                target = false;
+              }
+            }
             const damage = props.sequence?.damages.find((entry) => entry.playerId === player.playerId);
             const heal = props.sequence?.heals.find((entry) => entry.playerId === player.playerId);
             const hit = Boolean(damage) && ["impact", "damage"].includes(props.stage);
@@ -314,6 +550,8 @@ export function CombatStage(props: CombatStageProps) {
                   props.isPlaying && !relevant ? "combat-inactive" : "",
                   actor ? "combat-actor-active" : "",
                   target ? "combat-target-active" : "",
+                  props.stage === "clash-winner" && props.sequence?.winnerId === player.playerId ? "combat-clash-winner" : "",
+                  props.stage === "clash-winner" && props.sequence?.loserId === player.playerId ? "combat-clash-loser" : "",
                   hit ? "combat-hit-shake" : "",
                   dying ? "combat-death" : "",
                   props.sequence?.outcome === "EVADE_SUCCESS" && target ? "combat-dodge" : "",

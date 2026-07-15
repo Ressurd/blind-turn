@@ -74,9 +74,9 @@ function emitDeckRemoval(
   for (const player of room.players) {
     if (!player.connected || !player.socketId) continue;
     const view = roomManager.getPlayerView(roomCode, player.playerId);
-    if (view.deckRemovalCandidates.length > 0) {
+    if (view.deckRemovalCards.length > 0) {
       io.to(player.socketId).emit("game:deck-removal-required", {
-        cards: view.deckRemovalCandidates,
+        cards: view.deckRemovalCards,
         deadlineAt,
       });
     }

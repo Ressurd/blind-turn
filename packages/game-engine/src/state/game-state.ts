@@ -115,6 +115,7 @@ export function chooseInitialHand(
   state: GameState,
   playerId: string,
   selectedInstanceIds: readonly string[],
+  randomSource: RandomSource,
 ): GameState {
   if (state.phase !== "ROUND_STARTING" || state.roundNumber !== 0) {
     throw new Error("INVALID_GAME_PHASE");
@@ -127,6 +128,7 @@ export function chooseInitialHand(
   player.deckState = selectInitialTacticianHand(
     player.deckState,
     selectedInstanceIds,
+    randomSource,
   );
   return next;
 }

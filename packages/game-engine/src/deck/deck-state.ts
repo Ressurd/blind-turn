@@ -22,6 +22,8 @@ export function cloneDeckState(state: PlayerDeckState): PlayerDeckState {
     drawPile: state.drawPile.map(cloneCardInstance),
     hand: state.hand.map(cloneCardInstance),
     discardPile: state.discardPile.map(cloneCardInstance),
+    permanentlyRemovedCards:
+      state.permanentlyRemovedCards.map(cloneCardInstance),
     queuedCards: state.queuedCards.map((queued) => ({
       ...queued,
       additionalSelection: queued.additionalSelection
@@ -30,9 +32,12 @@ export function cloneDeckState(state: PlayerDeckState): PlayerDeckState {
     })),
     confirmed: state.confirmed,
     pendingRewardOptions: [...state.pendingRewardOptions],
-    selectedRewardCardId: state.selectedRewardCardId,
-    pendingRewardCardId: state.pendingRewardCardId,
-    pendingRemovalRequired: state.pendingRemovalRequired,
+    selectedRewardCardIds: [...state.selectedRewardCardIds],
+    rewardConfirmed: state.rewardConfirmed,
+    requiredRemovalCount: state.requiredRemovalCount,
+    selectedRemovalInstanceIds: [...state.selectedRemovalInstanceIds],
+    newlyAddedCardInstanceIds: [...state.newlyAddedCardInstanceIds],
+    deckRemovalConfirmed: state.deckRemovalConfirmed,
     pendingInitialHandSelection:
       state.pendingInitialHandSelection.map(cloneCardInstance),
     nextInstanceNumber: state.nextInstanceNumber,
@@ -106,28 +111,32 @@ export function createInitialDeckState(
     drawPile: randomSource.shuffle(deck).map(cloneCardInstance),
     hand: [],
     discardPile: [],
+    permanentlyRemovedCards: [],
     queuedCards: [],
     confirmed: false,
     pendingRewardOptions: [],
-    selectedRewardCardId: null,
-    pendingRewardCardId: null,
-    pendingRemovalRequired: false,
+    selectedRewardCardIds: [],
+    rewardConfirmed: false,
+    requiredRemovalCount: 0,
+    selectedRemovalInstanceIds: [],
+    newlyAddedCardInstanceIds: [],
+    deckRemovalConfirmed: false,
     pendingInitialHandSelection: [],
     nextInstanceNumber: deck.length + 1,
   };
-  const drawCount = characterId === "TACTICIAN"
-    ? TACTICIAN_INITIAL_DRAW_SIZE
-    : INITIAL_HAND_SIZE;
-  const dealt = drawCards(state, drawCount, randomSource).state;
   if (characterId === "TACTICIAN") {
-    dealt.pendingInitialHandSelection = dealt.hand.map(cloneCardInstance);
+    const offered = state.drawPile.splice(0, TACTICIAN_INITIAL_DRAW_SIZE);
+    state.hand.push(...offered);
+    state.pendingInitialHandSelection = state.hand.map(cloneCardInstance);
+    return state;
   }
-  return dealt;
+  return drawCards(state, INITIAL_HAND_SIZE, randomSource).state;
 }
 
 export function selectInitialTacticianHand(
   state: PlayerDeckState,
   selectedInstanceIds: readonly string[],
+  randomSource: RandomSource,
 ): PlayerDeckState {
   if (state.pendingInitialHandSelection.length !== TACTICIAN_INITIAL_DRAW_SIZE) {
     throw new Error("INITIAL_HAND_SELECTION_REQUIRED");
@@ -143,13 +152,38 @@ export function selectInitialTacticianHand(
     throw new Error("INITIAL_HAND_SELECTION_REQUIRED");
   }
   const next = cloneDeckState(state);
-  const discarded = next.hand.filter(
+  const returned = next.hand.filter(
     (card) => !uniqueIds.has(card.instanceId),
   );
   next.hand = next.hand.filter((card) => uniqueIds.has(card.instanceId));
-  next.discardPile.push(...discarded);
+  for (const card of returned) {
+    const position = randomSource.nextInt(0, next.drawPile.length, "INSERT");
+    next.drawPile.splice(position, 0, card);
+  }
   next.pendingInitialHandSelection = [];
   return next;
+}
+
+export function insertNewCards(
+  state: PlayerDeckState,
+  playerId: string,
+  cardIds: readonly string[],
+  randomSource: RandomSource,
+): { state: PlayerDeckState; inserted: ActionCardInstance[] } {
+  const next = cloneDeckState(state);
+  const inserted: ActionCardInstance[] = [];
+  for (const cardId of cardIds) {
+    const instance = createCardInstance(
+      playerId,
+      cardId,
+      next.nextInstanceNumber,
+    );
+    next.nextInstanceNumber += 1;
+    const position = randomSource.nextInt(0, next.drawPile.length, "INSERT");
+    next.drawPile.splice(position, 0, instance);
+    inserted.push(cloneCardInstance(instance));
+  }
+  return { state: next, inserted };
 }
 
 export function insertNewCard(
@@ -158,20 +192,7 @@ export function insertNewCard(
   cardId: string,
   randomSource: RandomSource,
 ): PlayerDeckState {
-  const next = cloneDeckState(state);
-  const instance = createCardInstance(
-    playerId,
-    cardId,
-    next.nextInstanceNumber,
-  );
-  next.nextInstanceNumber += 1;
-  const position = randomSource.nextInt(
-    0,
-    next.drawPile.length,
-    "INSERT",
-  );
-  next.drawPile.splice(position, 0, instance);
-  return next;
+  return insertNewCards(state, playerId, [cardId], randomSource).state;
 }
 
 export function getAllDeckCards(

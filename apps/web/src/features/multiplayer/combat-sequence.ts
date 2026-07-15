@@ -40,8 +40,24 @@ export type CombatRoll = {
   roll: number;
   bonus: number;
   total: number;
+  cardBonus?: number;
+  characterBonus?: number;
   difficulty?: number;
   succeeded?: boolean;
+};
+
+export type CombatClashAttempt = {
+  attemptNumber: number;
+  rolls: [CombatRoll, CombatRoll];
+  tied: boolean;
+};
+
+export type CombatClash = {
+  participants: [
+    { playerId: string; cardId: string; cardName: string },
+    { playerId: string; cardId: string; cardName: string },
+  ];
+  attempts: CombatClashAttempt[];
 };
 
 export type CombatCardReveal = {
@@ -76,6 +92,7 @@ export type CombatSequence = {
   outcome: CombatOutcome;
   cards: CombatCardReveal[];
   rolls: CombatRoll[];
+  clash?: CombatClash;
   damages: CombatDamage[];
   heals: CombatHeal[];
   reshuffles: CombatReshuffle[];
@@ -148,6 +165,10 @@ function buildStepSequence(
     (event): event is Extract<PublicBattleEvent, { type: "CLASH_RESOLVED" }> =>
       event.type === "CLASH_RESOLVED",
   );
+  const clashStarted = events.find(
+    (event): event is Extract<PublicBattleEvent, { type: "CLASH_STARTED" }> =>
+      event.type === "CLASH_STARTED",
+  );
   const guards = events.filter((event) => event.type === "GUARD_ACTIVATED");
   const evadeRolls = events.filter(
     (event): event is Extract<PublicBattleEvent, { type: "EVADE_ROLLED" }> =>
@@ -202,12 +223,20 @@ function buildStepSequence(
 
   const rolls: CombatRoll[] = events.flatMap((event): CombatRoll[] => {
     if (event.type === "CLASH_ROLLED") {
+      const participantIndex = clashStarted?.playerIds.indexOf(event.playerId) ?? -1;
+      const cardId = participantIndex >= 0 ? clashStarted?.cardIds[participantIndex] : undefined;
+      const definition = cardId ? getCardDefinition(cardId) : null;
+      const cardBonus = definition?.effect.kind === "ATTACK"
+        ? definition.effect.clashBonus ?? 0
+        : 0;
       return [{
         playerId: event.playerId,
         kind: "CLASH",
         roll: event.roll,
         bonus: event.bonus,
         total: event.total,
+        cardBonus,
+        characterBonus: event.bonus - cardBonus,
       }];
     }
     if (event.type === "EVADE_ROLLED") {
@@ -223,6 +252,20 @@ function buildStepSequence(
     }
     return [];
   });
+  const clashRolls = rolls.filter((roll) => roll.kind === "CLASH");
+  const clashAttempts = clashStarted
+    ? Array.from({ length: Math.floor(clashRolls.length / 2) }, (_, index) => {
+        const pair = clashRolls.slice(index * 2, index * 2 + 2);
+        const first = pair.find((roll) => roll.playerId === clashStarted.playerIds[0]);
+        const second = pair.find((roll) => roll.playerId === clashStarted.playerIds[1]);
+        if (!first || !second) return null;
+        return {
+          attemptNumber: index + 1,
+          rolls: [first, second] as [CombatRoll, CombatRoll],
+          tied: first.total === second.total,
+        };
+      }).filter((attempt): attempt is CombatClashAttempt => Boolean(attempt))
+    : [];
 
   return {
     id: `round-${stepStarted.roundNumber}-step-${stepStarted.stepIndex}`,
@@ -239,6 +282,16 @@ function buildStepSequence(
     outcome,
     cards,
     rolls,
+    ...(clashStarted ? {
+      clash: {
+        participants: clashStarted.playerIds.map((playerId, index) => ({
+          playerId,
+          cardId: clashStarted.cardIds[index]!,
+          cardName: getCardDefinition(clashStarted.cardIds[index]!).name,
+        })) as CombatClash["participants"],
+        attempts: clashAttempts,
+      },
+    } : {}),
     damages: damageEvents.map((event) => ({
       playerId: event.playerId,
       damage: event.damage,

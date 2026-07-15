@@ -1,8 +1,9 @@
 import {
   CHARACTER_CATALOG,
-  MAX_DECK_SIZE,
+  MAX_TOTAL_DECK_SIZE,
   MAX_HAND_SIZE,
   MAX_HP,
+  REWARD_SELECTION_COUNT,
   getAllDeckCards,
   getCardDefinition,
   type PlayerGameView,
@@ -23,7 +24,11 @@ function summarizeDeck(state: PlayerDeckState): PrivateDeckCardSummary[] {
   const summaries = new Map<string, PrivateDeckCardSummary>();
   const add = (
     card: { cardId: string; instanceId: string },
-    location: "handCount" | "drawPileCount" | "discardPileCount",
+    location:
+      | "handCount"
+      | "drawPileCount"
+      | "discardPileCount"
+      | "removedCount",
   ) => {
     const current = summaries.get(card.cardId) ?? {
       cardId: card.cardId,
@@ -33,8 +38,9 @@ function summarizeDeck(state: PlayerDeckState): PrivateDeckCardSummary[] {
       drawPileCount: 0,
       discardPileCount: 0,
       queuedCount: 0,
+      removedCount: 0,
     };
-    current.totalCount += 1;
+    if (location !== "removedCount") current.totalCount += 1;
     if (location === "handCount" && queuedIds.has(card.instanceId)) {
       current.queuedCount += 1;
     } else {
@@ -45,6 +51,7 @@ function summarizeDeck(state: PlayerDeckState): PrivateDeckCardSummary[] {
   state.hand.forEach((card) => add(card, "handCount"));
   state.drawPile.forEach((card) => add(card, "drawPileCount"));
   state.discardPile.forEach((card) => add(card, "discardPileCount"));
+  state.permanentlyRemovedCards.forEach((card) => add(card, "removedCount"));
   return [...summaries.values()].sort((left, right) =>
     left.definition.name.localeCompare(right.definition.name, "ko")
   );
@@ -84,6 +91,8 @@ export function createPlayerView(
         drawPileCount: player?.deckState.drawPile.length ?? 0,
         discardPileCount: player?.deckState.discardPile.length ?? 0,
         totalDeckCount: player ? getAllDeckCards(player.deckState).length : 0,
+        permanentlyRemovedCount:
+          player?.deckState.permanentlyRemovedCards.length ?? 0,
         submitted: player?.deckState.confirmed ?? false,
         usedCardCount: room.phase === "SELECTING_CARDS"
           ? null
@@ -94,6 +103,8 @@ export function createPlayerView(
     myCharacterId: viewer.characterId,
     myHand: gamePlayer?.deckState.hand.map(privateCard) ?? [],
     myDiscardPile: gamePlayer?.deckState.discardPile.map(privateCard) ?? [],
+    myPermanentlyRemovedCards:
+      gamePlayer?.deckState.permanentlyRemovedCards.map(privateCard) ?? [],
     myDrawPileSummary: gamePlayer
       ? summarizeDeck(gamePlayer.deckState).filter((summary) => summary.drawPileCount > 0)
       : [],
@@ -108,27 +119,48 @@ export function createPlayerView(
     drawPileCount: gamePlayer?.deckState.drawPile.length ?? 0,
     discardPileCount: gamePlayer?.deckState.discardPile.length ?? 0,
     totalDeckCount: gamePlayer ? getAllDeckCards(gamePlayer.deckState).length : 0,
-    maxDeckSize: MAX_DECK_SIZE,
+    permanentlyRemovedCount:
+      gamePlayer?.deckState.permanentlyRemovedCards.length ?? 0,
+    maxDeckSize: MAX_TOTAL_DECK_SIZE,
     initialHandOptions:
       gamePlayer?.deckState.pendingInitialHandSelection.map(privateCard) ?? [],
     rewardOptions: gamePlayer?.deckState.pendingRewardOptions.map(getCardDefinition) ?? [],
-    selectedReward:
-      gamePlayer?.deckState.selectedRewardCardId
-        ? getCardDefinition(gamePlayer.deckState.selectedRewardCardId)
-        : null,
+    selectedRewards:
+      gamePlayer?.deckState.selectedRewardCardIds.map(getCardDefinition) ?? [],
+    rewardSelectionConfirmed:
+      gamePlayer?.deckState.rewardConfirmed ?? false,
+    requiredRewardSelectionCount: REWARD_SELECTION_COUNT,
     rewardSelectionStatus:
       state && (room.phase === "SELECTING_REWARD" || room.phase === "SELECTING_DECK_REMOVAL")
         ? {
             selectedPlayerCount: state.players.filter(
-              (player) => player.alive && player.deckState.selectedRewardCardId,
+              (player) => player.alive && player.deckState.rewardConfirmed,
             ).length,
             totalPlayerCount: state.players.filter((player) => player.alive).length,
           }
         : null,
-    deckRemovalCandidates:
-      gamePlayer?.deckState.pendingRemovalRequired
-        ? getAllDeckCards(gamePlayer.deckState).map(privateCard)
-        : [],
+    deckRemovalCards: gamePlayer?.deckState.requiredRemovalCount
+      ? ([
+          ...gamePlayer.deckState.hand.map((card) => ({ card, location: "HAND" as const })),
+          ...gamePlayer.deckState.drawPile.map((card) => ({ card, location: "DRAW_PILE" as const })),
+          ...gamePlayer.deckState.discardPile.map((card) => ({ card, location: "DISCARD_PILE" as const })),
+        ]).map(({ card, location }) => {
+          const newlyAdded = gamePlayer.deckState.newlyAddedCardInstanceIds.includes(
+            card.instanceId,
+          );
+          return {
+            ...privateCard(card),
+            location,
+            newlyAdded,
+            removable: !newlyAdded,
+          };
+        })
+      : [],
+    requiredRemovalCount: gamePlayer?.deckState.requiredRemovalCount ?? 0,
+    selectedRemovalInstanceIds:
+      gamePlayer?.deckState.selectedRemovalInstanceIds ?? [],
+    deckRemovalConfirmed:
+      gamePlayer?.deckState.deckRemovalConfirmed ?? false,
     actionDeadlineAt:
       room.phase === "SELECTING_CARDS" ? room.actionDeadlineAt : null,
     rewardDeadlineAt:

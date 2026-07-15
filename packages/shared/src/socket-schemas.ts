@@ -33,7 +33,7 @@ export const SetReadyPayloadSchema = z.object({
 });
 export const InitialHandSelectionPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
-  selectedInstanceIds: z.array(z.string().min(1)).length(3),
+  selectedInstanceIds: z.array(z.string().min(1)).length(5),
 });
 
 const AdditionalSelectionSchema = z.union([
@@ -75,13 +75,13 @@ export const EventsFinishedPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
   roundNumber: z.number().int().positive(),
 });
-export const SelectRewardPayloadSchema = z.object({
+export const UpdateRewardSelectionPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
-  cardId: z.string().min(1),
+  selectedCardIds: z.array(z.string().min(1)).max(2),
 });
-export const SelectDeckRemovalPayloadSchema = z.object({
+export const UpdateDeckRemovalPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
-  cardInstanceId: z.string().min(1),
+  selectedInstanceIds: z.array(z.string().min(1)).max(15),
 });
 export const ChatSendPayloadSchema = z.object({
   roomCode: RoomCodeSchema,

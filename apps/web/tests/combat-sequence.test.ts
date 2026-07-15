@@ -10,9 +10,12 @@ import {
   synchronizeCombatDisplayState,
 } from "../src/features/multiplayer/combat-sequence";
 import {
-  COMBAT_PLAYBACK_TIMINGS,
+  COMBAT_PLAYBACK_BEATS,
+  PLAYBACK_BEAT_MS,
   createPlaybackTimer,
+  getPlaybackDuration,
   getCombatPlaybackSteps,
+  playbackPhaseForStage,
   scalePlaybackDuration,
 } from "../src/features/multiplayer/use-combat-playback";
 
@@ -90,6 +93,19 @@ describe("buildCombatSequences V2", () => {
     ]));
     expect(sequence).toMatchObject({ outcome: "CLASH", winnerId: "a", loserId: "b" });
     expect(sequence?.rolls.map((roll) => roll.total)).toEqual([8, 6]);
+    expect(sequence?.clash).toMatchObject({
+      participants: [
+        { playerId: "a", cardId: "BASE_QUICK_STRIKE", cardName: "속공" },
+        { playerId: "b", cardId: "BASE_HEAVY_STRIKE", cardName: "강공" },
+      ],
+      attempts: [{ attemptNumber: 1, tied: false }],
+    });
+    expect(sequence?.clash?.attempts[0]?.rolls[0]).toMatchObject({
+      roll: 5,
+      cardBonus: 2,
+      characterBonus: 1,
+      total: 8,
+    });
   });
 });
 
@@ -151,18 +167,105 @@ describe("playback timer lifecycle", () => {
     expect(callback).not.toHaveBeenCalled();
   });
 
-  it("uses slower non-overlapping sequence stages and scales only their duration", () => {
+  it("uses non-overlapping 600ms beat phases and global speed ratios", () => {
     const [sequence] = buildCombatSequences(step([
       { type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "a", cardInstanceId: "a1", cardId: "BASE_QUICK_STRIKE", targetPlayerId: "b" },
       { type: "EVADE_ROLLED", stepIndex: 0, playerId: "b", attackerId: "a", roll: 7, bonus: 0, difficulty: 8, succeeded: false },
       { type: "DAMAGE_APPLIED", stepIndex: 0, playerId: "b", damage: hp(10), remainingHp: hp(20), source: "EVADE_FAILURE" },
     ]));
     const steps = getCombatPlaybackSteps(sequence!);
-    expect(steps.map((entry) => entry.stage)).toEqual(["reveal", "roll", "impact", "damage", "result"]);
-    expect(steps[0]!.durationMs).toBe(COMBAT_PLAYBACK_TIMINGS.cardRevealBase + COMBAT_PLAYBACK_TIMINGS.cardRevealEach);
+    expect(steps.map((entry) => entry.stage)).toEqual(["step-intro", "reveal", "focus", "roll", "damage", "summary", "transition"]);
+    expect(steps.every((entry) => entry.durationMs % PLAYBACK_BEAT_MS === 0)).toBe(true);
+    expect(steps.map((entry) => playbackPhaseForStage(entry.stage))).toEqual([
+      "STEP_INTRO",
+      "REVEALING_CARDS",
+      "FOCUSING_INTERACTION",
+      "PLAYING_INTERACTION",
+      "APPLYING_STEP_DAMAGE",
+      "SHOWING_STEP_SUMMARY",
+      "STEP_TRANSITION",
+    ]);
     expect(scalePlaybackDuration(1_800, 1)).toBe(1_800);
     expect(scalePlaybackDuration(1_800, 1.5)).toBe(1_200);
     expect(scalePlaybackDuration(1_800, 2)).toBe(900);
+    expect(getPlaybackDuration(2, 1)).toBe(1_200);
+    expect(getPlaybackDuration(2, 1.5)).toBe(800);
+    expect(getPlaybackDuration(2, 2)).toBe(600);
+  });
+
+  it("plays each server clash roll in order, repeats ties, then reveals the winner", () => {
+    const [sequence] = buildCombatSequences(step([
+      { type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "a", cardInstanceId: "a1", cardId: "BASE_QUICK_STRIKE", targetPlayerId: "b" },
+      { type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "b", cardInstanceId: "b1", cardId: "BASE_HEAVY_STRIKE", targetPlayerId: "a" },
+      { type: "CLASH_STARTED", stepIndex: 0, playerIds: ["a", "b"], cardIds: ["BASE_QUICK_STRIKE", "BASE_HEAVY_STRIKE"] },
+      { type: "CLASH_ROLLED", stepIndex: 0, playerId: "a", roll: 6, bonus: 2, total: 8 },
+      { type: "CLASH_ROLLED", stepIndex: 0, playerId: "b", roll: 8, bonus: 0, total: 8 },
+      { type: "CLASH_ROLLED", stepIndex: 0, playerId: "a", roll: 7, bonus: 2, total: 9 },
+      { type: "CLASH_ROLLED", stepIndex: 0, playerId: "b", roll: 6, bonus: 0, total: 6 },
+      { type: "CLASH_RESOLVED", stepIndex: 0, winnerId: "a", loserId: "b" },
+      { type: "DAMAGE_APPLIED", stepIndex: 0, playerId: "b", damage: hp(3), remainingHp: hp(27), source: "ATTACK" },
+    ]));
+    expect(sequence?.clash?.attempts.map((attempt) => ({
+      attemptNumber: attempt.attemptNumber,
+      totals: attempt.rolls.map((roll) => roll.total),
+      tied: attempt.tied,
+    }))).toEqual([
+      { attemptNumber: 1, totals: [8, 8], tied: true },
+      { attemptNumber: 2, totals: [9, 6], tied: false },
+    ]);
+
+    const stages = getCombatPlaybackSteps(sequence!).map((entry) => entry.stage);
+    expect(stages).toEqual([
+      "step-intro", "reveal", "clash-intro",
+      "clash-first-roll", "clash-first-result", "clash-second-roll", "clash-second-result",
+      "clash-modifiers", "clash-compare", "clash-tie",
+      "clash-first-roll", "clash-first-result", "clash-second-roll", "clash-second-result",
+      "clash-modifiers", "clash-compare", "clash-winner",
+      "impact", "damage", "summary", "transition",
+    ]);
+    expect(stages.indexOf("clash-first-result")).toBeLessThan(stages.indexOf("clash-second-roll"));
+    expect(stages.lastIndexOf("clash-compare")).toBeLessThan(stages.indexOf("clash-winner"));
+    expect(getCombatPlaybackSteps(sequence!).every((entry) => entry.durationMs % PLAYBACK_BEAT_MS === 0)).toBe(true);
+
+    const reducedStages = getCombatPlaybackSteps(sequence!, true).map((entry) => entry.stage);
+    expect(reducedStages).not.toContain("clash-first-roll");
+    expect(reducedStages).not.toContain("clash-second-roll");
+    expect(reducedStages.indexOf("clash-first-result")).toBeLessThan(reducedStages.indexOf("clash-second-result"));
+    expect(reducedStages).toContain("clash-tie");
+    expect(reducedStages).toContain("clash-winner");
+  });
+
+  it("reveals all cards in one beat regardless of player count", () => {
+    const oneCard = buildCombatSequences(step([
+      { type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "a", cardInstanceId: "a1", cardId: "BASE_GUARD" },
+    ]))[0]!;
+    const sixCards = buildCombatSequences(step(Array.from({ length: 6 }, (_, index) => ({
+      type: "CARD_REVEALED" as const,
+      roundNumber: 1,
+      stepIndex: 0,
+      playerId: `p${index}`,
+      cardInstanceId: `c${index}`,
+      cardId: "BASE_GUARD",
+    }))))[0]!;
+    const revealDuration = (sequence: typeof oneCard) => getCombatPlaybackSteps(sequence).find((entry) => entry.stage === "reveal")?.durationMs;
+    expect(revealDuration(oneCard)).toBe(PLAYBACK_BEAT_MS * COMBAT_PLAYBACK_BEATS.cardReveal);
+    expect(revealDuration(sixCards)).toBe(revealDuration(oneCard));
+  });
+
+  it("applies every player's step damage in one shared damage beat", () => {
+    const sequence = buildCombatSequences(step([
+      { type: "DAMAGE_APPLIED", stepIndex: 0, playerId: "a", damage: hp(3), remainingHp: hp(27), source: "ATTACK" },
+      { type: "DAMAGE_APPLIED", stepIndex: 0, playerId: "b", damage: hp(10), remainingHp: hp(20), source: "COUNTER" },
+    ]))[0]!;
+    expect(getCombatPlaybackSteps(sequence).filter((entry) => entry.stage === "damage")).toEqual([
+      { stage: "damage", durationMs: PLAYBACK_BEAT_MS },
+    ]);
+    const applied = applyCombatDamage(createCombatDisplayState([
+      { playerId: "a", hp: hp(30), alive: true },
+      { playerId: "b", hp: hp(30), alive: true },
+    ]), sequence);
+    expect(applied.a?.hp).toBe(hp(27));
+    expect(applied.b?.hp).toBe(hp(20));
   });
 
   it("places reshuffle stages before draw and includes a round-end summary", () => {
@@ -175,7 +278,7 @@ describe("playback timer lifecycle", () => {
     ]);
     expect(sequences.map((sequence) => sequence.type)).toEqual(["ROUND", "DECK", "ROUND_SUMMARY"]);
     expect(getCombatPlaybackSteps(sequences[1]!).map((entry) => entry.stage)).toEqual([
-      "reveal",
+      "step-intro",
       "reshuffle-start",
       "reshuffle-shuffle",
       "reshuffle-complete",
@@ -183,7 +286,7 @@ describe("playback timer lifecycle", () => {
       "result",
     ]);
     expect(getCombatPlaybackSteps(sequences[2]!)).toEqual([
-      { stage: "result", durationMs: COMBAT_PLAYBACK_TIMINGS.roundSummary },
+      { stage: "summary", durationMs: PLAYBACK_BEAT_MS * COMBAT_PLAYBACK_BEATS.stepSummary },
     ]);
   });
 
