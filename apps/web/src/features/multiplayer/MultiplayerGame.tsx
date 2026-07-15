@@ -15,8 +15,16 @@ import {
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { CombatStage } from "./CombatStage";
+import { DeckInspector, type DeckInspectorMode } from "./DeckInspector";
+import { RewardSelectionModal } from "./RewardSelectionModal";
+import {
+  firstFreeActionStage,
+  getReservationLabels,
+  getTargetActionCandidates,
+} from "./action-reservation";
 import {
   buildCombatSequences,
+  createCombatDeckDisplayState,
   createCombatDisplayState,
   describeCombatSequence,
 } from "./combat-sequence";
@@ -110,7 +118,12 @@ export function MultiplayerGame() {
   const [initialSelection, setInitialSelection] = useState<string[]>([]);
   const [pendingCard, setPendingCard] = useState<PrivateCardView | null>(null);
   const [pendingTarget, setPendingTarget] = useState("");
+  const [pendingStage, setPendingStage] = useState<0 | 1 | 2>(0);
   const [additionalIds, setAdditionalIds] = useState<string[]>([]);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [showQueueEditor, setShowQueueEditor] = useState(false);
+  const [deckInspectorMode, setDeckInspectorMode] = useState<DeckInspectorMode | null>(null);
+  const [selectedRewardCardId, setSelectedRewardCardId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [showFullLog, setShowFullLog] = useState(false);
   const socketRef = useRef<GameClientSocket | null>(null);
@@ -135,10 +148,14 @@ export function MultiplayerGame() {
 
   const connected = connectionStatus === "connected";
   const self = view?.players.find((player) => player.playerId === view.selfPlayerId) ?? null;
-  const targets = view?.players.filter(
-    (player) => player.alive && player.playerId !== view.selfPlayerId,
-  ) ?? [];
   const queuedIds = new Set(view?.myQueuedCards.map((queued) => queued.cardInstanceId) ?? []);
+  const additionallyReservedIds = new Set(view?.myQueuedCards.flatMap((queued) => {
+    const selection = queued.additionalSelection;
+    if (!selection) return [];
+    if ("handCardInstanceIds" in selection) return selection.handCardInstanceIds;
+    if ("returnCardInstanceId" in selection) return [selection.returnCardInstanceId];
+    return [];
+  }) ?? []);
   const playerNames = useMemo(
     () => Object.fromEntries((view?.players ?? []).map((player) => [player.playerId, player.nickname])),
     [view?.players],
@@ -147,6 +164,39 @@ export function MultiplayerGame() {
     (record) => record.sequence.type === "STEP",
   );
   const visibleRecords = showFullLog ? combatRecords : combatRecords.slice(-8);
+  const displayDeck = view
+    ? playback.displayDeckState[view.selfPlayerId] ?? {
+        handCount: view.myHand.length,
+        drawPileCount: view.drawPileCount,
+        discardPileCount: view.discardPileCount,
+        totalDeckCount: view.totalDeckCount,
+      }
+    : null;
+  const selectedPlayer = view?.players.find((player) => player.playerId === selectedPlayerId) ?? null;
+  const reservationLabels = useMemo(() => {
+    return view ? getReservationLabels(view) : {};
+  }, [view]);
+  const actionCandidates = useMemo(() => {
+    return view && selectedPlayer
+      ? getTargetActionCandidates(view, selectedPlayer.playerId)
+      : [];
+  }, [selectedPlayer, view]);
+
+  useEffect(() => {
+    if (
+      view?.phase !== "SELECTING_CARDS"
+      || view.myConfirmed
+      || playback.isPlaying
+    ) {
+      setSelectedPlayerId(null);
+      setPendingCard(null);
+      setShowQueueEditor(false);
+    }
+  }, [playback.isPlaying, view?.myConfirmed, view?.phase]);
+
+  useEffect(() => {
+    if (view?.phase !== "SELECTING_REWARD") setSelectedRewardCardId(null);
+  }, [view?.phase, view?.roundNumber]);
 
   useEffect(() => {
     const socket = getGameSocket();
@@ -175,7 +225,10 @@ export function MultiplayerGame() {
           return;
         }
         setView(response.data.view);
-        playback.syncServerState(createCombatDisplayState(response.data.view.players));
+        playback.syncServerState(
+          createCombatDisplayState(response.data.view.players),
+          createCombatDeckDisplayState(response.data.view.players),
+        );
         const pending = response.data.view.pendingRoundPlayback;
         if (pending) {
           playback.enqueueBatch({
@@ -206,6 +259,8 @@ export function MultiplayerGame() {
               };
             })),
             serverState: createCombatDisplayState(pending.publicState.players),
+            initialDeckState: createCombatDeckDisplayState(response.data.view.players),
+            serverDeckState: createCombatDeckDisplayState(pending.publicState.players),
           });
         }
         setNotice("게임 상태를 복원했습니다.");
@@ -233,10 +288,16 @@ export function MultiplayerGame() {
     socket.on("chat:error", onSocketError);
     socket.on("room:state-updated", (nextView) => {
       setView(nextView);
-      playback.syncServerState(createCombatDisplayState(nextView.players));
+      playback.syncServerState(
+        createCombatDisplayState(nextView.players),
+        createCombatDeckDisplayState(nextView.players),
+      );
     });
     socket.on("game:started", () => {
-      playback.reset(createCombatDisplayState(viewRef.current?.players ?? []));
+      playback.reset(
+        createCombatDisplayState(viewRef.current?.players ?? []),
+        createCombatDeckDisplayState(viewRef.current?.players ?? []),
+      );
       setNotice("게임이 시작되었습니다.");
     });
     socket.on("game:round-resolving", ({ roundNumber }) =>
@@ -248,6 +309,8 @@ export function MultiplayerGame() {
         sequences: buildCombatSequences(payload.events),
         initialState: createCombatDisplayState(viewRef.current?.players ?? payload.publicState.players),
         serverState: createCombatDisplayState(payload.publicState.players),
+        initialDeckState: createCombatDeckDisplayState(viewRef.current?.players ?? payload.publicState.players),
+        serverDeckState: createCombatDeckDisplayState(payload.publicState.players),
       });
     });
     socket.on("game:next-round", ({ roundNumber }) => {
@@ -286,6 +349,9 @@ export function MultiplayerGame() {
     if (!socket) return;
     setError(null);
     setNotice(null);
+    setSelectedPlayerId(null);
+    setPendingCard(null);
+    setDeckInspectorMode(null);
     socket.emit("room:create", { nickname }, (response) => {
       if (!response.ok) return setError(response.error);
       persistSession(response.data.credentials);
@@ -340,12 +406,18 @@ export function MultiplayerGame() {
     );
   }
 
-  function emitQueue(card: PrivateCardView, targetPlayerId?: string, additionalSelection?: QueuedCardAdditionalSelection) {
+  function emitQueue(
+    card: PrivateCardView,
+    order: 0 | 1 | 2,
+    targetPlayerId?: string,
+    additionalSelection?: QueuedCardAdditionalSelection,
+  ) {
     if (!view || !socketRef.current) return;
     socketRef.current.emit("game:queue-card", {
       roomCode: view.roomCode,
       roundNumber: view.roundNumber,
       cardInstanceId: card.instanceId,
+      order,
       ...(targetPlayerId ? { targetPlayerId } : {}),
       additionalSelection: additionalSelection ?? null,
     }, (response) => {
@@ -354,19 +426,21 @@ export function MultiplayerGame() {
         setPendingCard(null);
         setPendingTarget("");
         setAdditionalIds([]);
+        setSelectedPlayerId(null);
       }
     });
   }
 
   function chooseHandCard(card: PrivateCardView) {
-    const needsAdditional = ["TACTICIAN_RECYCLE", "TACTICIAN_SWAP", "TACTICIAN_SIFT"].includes(card.cardId);
-    if (card.definition.targetType === "ENEMY" || needsAdditional) {
-      setPendingCard(card);
-      setPendingTarget("");
-      setAdditionalIds([]);
-      return;
-    }
-    emitQueue(card);
+    const firstFreeStage = view ? firstFreeActionStage(view) ?? 0 : 0;
+    setPendingCard(card);
+    setPendingStage(firstFreeStage);
+    setPendingTarget(
+      selectedPlayer && selectedPlayer.playerId !== view?.selfPlayerId
+        ? selectedPlayer.playerId
+        : "",
+    );
+    setAdditionalIds([]);
   }
 
   function confirmPendingCard() {
@@ -383,7 +457,7 @@ export function MultiplayerGame() {
       if (additionalIds.length !== 1) return;
       additional = { returnCardInstanceId: additionalIds[0]! };
     }
-    emitQueue(pendingCard, pendingTarget || undefined, additional);
+    emitQueue(pendingCard, pendingStage, pendingTarget || undefined, additional);
   }
 
   function removeQueued(instanceId: string) {
@@ -395,17 +469,19 @@ export function MultiplayerGame() {
     }, (response) => { if (!response.ok) setError(response.error); });
   }
 
-  function moveQueued(index: number, direction: -1 | 1) {
+  function moveQueued(cardInstanceId: string, order: 0 | 1 | 2) {
     if (!view || !socketRef.current) return;
-    const next = [...view.myQueuedCards];
-    const target = index + direction;
-    if (target < 0 || target >= next.length) return;
-    [next[index], next[target]] = [next[target]!, next[index]!];
-    socketRef.current.emit("game:reorder-queued-cards", {
+    socketRef.current.emit("game:move-queued-card", {
       roomCode: view.roomCode,
       roundNumber: view.roundNumber,
-      orderedInstanceIds: next.map((queued) => queued.cardInstanceId),
+      cardInstanceId,
+      order,
     }, (response) => { if (!response.ok) setError(response.error); });
+  }
+
+  function cancelAllQueued() {
+    if (!view || !socketRef.current) return;
+    for (const queued of view.myQueuedCards) removeQueued(queued.cardInstanceId);
   }
 
   function confirmRound() {
@@ -420,6 +496,7 @@ export function MultiplayerGame() {
     if (!view || !socketRef.current) return;
     socketRef.current.emit("game:select-reward", { roomCode: view.roomCode, cardId }, (response) => {
       if (!response.ok) setError(response.error);
+      else setSelectedRewardCardId(null);
     });
   }
 
@@ -448,6 +525,9 @@ export function MultiplayerGame() {
     playback.reset();
     setError(null);
     setNotice(null);
+    setSelectedPlayerId(null);
+    setPendingCard(null);
+    setDeckInspectorMode(null);
   }
 
   function requestRematch() {
@@ -553,18 +633,24 @@ export function MultiplayerGame() {
         </section>
       ) : (
         <section className="v2BattlePage">
-          <div className="battleTop"><div><p className="eyebrow">LIVE MATCH / {view.roomCode}</p><h1>ROUND {playback.currentRoundNumber ?? view.roundNumber}</h1></div><div className="deckStats"><span>HAND <b>{view.myHand.length}/5</b></span><span>DRAW <b>{view.drawPileCount}</b></span><span>DISCARD <b>{view.discardPileCount}</b></span></div><Countdown deadlineAt={view.actionDeadlineAt ?? view.rewardDeadlineAt} maxSeconds={view.actionDeadlineAt ? 60 : 30} /></div>
+          <div className="battleTop"><div><p className="eyebrow">LIVE MATCH / {view.roomCode}</p><h1>ROUND {playback.currentRoundNumber ?? view.roundNumber}</h1></div><div className="deckStats"><button type="button" onClick={() => setDeckInspectorMode("hand")}><span>손패</span><b>{displayDeck?.handCount ?? view.myHand.length} / 5</b></button><button type="button" onClick={() => setDeckInspectorMode("draw")}><span>덱</span><b>{displayDeck?.drawPileCount ?? view.drawPileCount}장</b></button><button type="button" onClick={() => setDeckInspectorMode("discard")}><span>무덤 · 버린 카드</span><b>{displayDeck?.discardPileCount ?? view.discardPileCount}장</b></button><button type="button" onClick={() => setDeckInspectorMode("all")}><span>전체 덱</span><b>{displayDeck?.totalDeckCount ?? view.totalDeckCount} / {view.maxDeckSize}</b></button></div><Countdown deadlineAt={view.actionDeadlineAt ?? view.rewardDeadlineAt} maxSeconds={view.actionDeadlineAt ? 60 : 30} /></div>
 
           {view.phase === "ROUND_STARTING" && view.initialHandOptions.length > 0 ? (
             <section className="modalPanel initialHandPanel"><p className="eyebrow">TACTICIAN PASSIVE</p><h2>시작 손패 3장을 선택하세요</h2><div className="v2CardGrid">{view.initialHandOptions.map((card) => <CardTile key={card.instanceId} card={card} selected={initialSelection.includes(card.instanceId)} onClick={() => setInitialSelection((current) => current.includes(card.instanceId) ? current.filter((id) => id !== card.instanceId) : current.length < 3 ? [...current, card.instanceId] : current)} />)}</div><button className="primaryButton" disabled={initialSelection.length !== 3} onClick={submitInitialHand}>3장 확정</button></section>
           ) : null}
 
-          {view.phase === "SELECTING_REWARD" && view.rewardOptions.length > 0 ? (
-            <section className="modalPanel rewardPanel"><p className="eyebrow">ROUND REWARD</p><h2>새 카드 1장을 선택하세요</h2><div className="v2CardGrid">{view.rewardOptions.map((definition) => <button className={`v2Card card-${definition.category.toLowerCase()}`} key={definition.id} onClick={() => selectReward(definition.id)}><span>{definition.classId}</span><strong>{definition.name}</strong><p>{definition.description}</p><small>덱에 추가</small></button>)}</div></section>
+          {view.phase === "SELECTING_REWARD" ? (
+            <RewardSelectionModal
+              view={view}
+              selectedCardId={selectedRewardCardId}
+              onSelectCard={setSelectedRewardCardId}
+              onConfirm={selectReward}
+              onOpenDeck={() => setDeckInspectorMode("all")}
+            />
           ) : null}
 
           {view.phase === "SELECTING_DECK_REMOVAL" && view.deckRemovalCandidates.length > 0 ? (
-            <section className="modalPanel removalPanel"><p className="eyebrow">DECK LIMIT 10</p><h2>기존 카드 1장을 제거하세요</h2><p>새 보상 카드는 제거할 수 없으며 공격 카드가 최소 1장 남아야 합니다.</p><div className="v2CardGrid compact">{view.deckRemovalCandidates.map((card) => <CardTile key={card.instanceId} card={card} footer="제거" onClick={() => selectRemoval(card.instanceId)} />)}</div></section>
+            <section className="modalPanel removalPanel"><div className="panelTitle"><div><p className="eyebrow">DECK LIMIT 10</p><h2>기존 카드 1장을 제거하세요</h2></div><button type="button" onClick={() => setDeckInspectorMode("all")}>현재 덱 보기</button></div><p>새 보상 카드는 제거할 수 없으며 공격 카드가 최소 1장 남아야 합니다.</p><div className="v2CardGrid compact">{view.deckRemovalCandidates.map((card) => <CardTile key={card.instanceId} card={card} footer="제거" onClick={() => selectRemoval(card.instanceId)} />)}</div></section>
           ) : null}
 
           {view.phase === "FINISHED" && !playback.isPlaying ? (
@@ -587,31 +673,60 @@ export function MultiplayerGame() {
                 onTogglePause={playback.togglePause}
                 onSpeedChange={playback.setSpeed}
                 onSkip={playback.skip}
+                selectionEnabled={view.phase === "SELECTING_CARDS" && Boolean(self?.alive) && !view.myConfirmed && !playback.isPlaying}
+                selectedPlayerId={selectedPlayerId}
+                reservationLabels={reservationLabels}
+                onPlayerSelect={(playerId) => {
+                  setSelectedPlayerId(playerId);
+                  setPendingCard(null);
+                  setAdditionalIds([]);
+                }}
               />
 
               {view.phase === "SELECTING_CARDS" && self?.alive && !playback.isPlaying ? (
-                <section className="cardCommandPanel">
-                  <div className="panelTitle"><div><p className="eyebrow">PRIVATE QUEUE</p><h2>{view.myConfirmed ? "라운드 확정 완료" : "최대 3장을 순서대로 예약"}</h2></div><span>{view.myQueuedCards.length}/{MAX_CARDS_PER_ROUND}</span></div>
-                  <div className="queueSlots">
-                    {Array.from({ length: 3 }, (_, index) => {
-                      const queued = view.myQueuedCards[index];
+                <section className={`actionSummaryDock ${view.myConfirmed ? "confirmed" : ""}`}>
+                  <div className="actionSummaryHead"><div><p className="eyebrow">MY ACTIONS</p><h2>{view.myConfirmed ? "행동 확정 완료" : "내 행동"}</h2></div><strong>{view.myQueuedCards.length}/{MAX_CARDS_PER_ROUND}</strong></div>
+                  <ol>
+                    {([0, 1, 2] as const).map((order) => {
+                      const queued = view.myQueuedCards.find((entry) => entry.order === order);
                       const card = queued ? view.myHand.find((entry) => entry.instanceId === queued.cardInstanceId) : null;
-                      return <div className={queued ? "queueSlot filled" : "queueSlot"} key={index}><b>{index + 1}</b>{card && queued ? <><strong>{card.definition.name}</strong><small>{queued.targetPlayerId ? `→ ${playerNames[queued.targetPlayerId]}` : "대상 없음"}</small>{!view.myConfirmed ? <div><button onClick={() => moveQueued(index, -1)} disabled={index === 0}>←</button><button onClick={() => moveQueued(index, 1)} disabled={index === view.myQueuedCards.length - 1}>→</button><button onClick={() => removeQueued(queued.cardInstanceId)}>제거</button></div> : null}</> : <span>EMPTY</span>}</div>;
+                      return <li key={order} className={queued ? "filled" : ""}><b>{order + 1}</b><span>{card?.definition.name ?? "비어 있음"}</span><small>{queued?.targetPlayerId ? `→ ${playerNames[queued.targetPlayerId]}` : queued ? "자신 / 대상 없음" : ""}</small></li>;
                     })}
-                  </div>
-                  {!view.myConfirmed ? <div className="v2CardGrid handGrid">{view.myHand.map((card) => <CardTile key={card.instanceId} card={card} disabled={queuedIds.has(card.instanceId) || view.myQueuedCards.length >= 3} selected={queuedIds.has(card.instanceId)} footer={queuedIds.has(card.instanceId) ? "예약됨" : "큐에 추가"} onClick={() => chooseHandCard(card)} />)}</div> : <div className="lockedRound">✓ 다른 플레이어의 확정을 기다리고 있습니다.</div>}
-                  {!view.myConfirmed ? <button className="confirmRoundButton" onClick={confirmRound}>이 순서로 라운드 확정 · 변경 불가</button> : null}
+                  </ol>
+                  {view.myConfirmed ? <p className="lockedRound">✓ 다른 플레이어의 확정을 기다리고 있습니다.</p> : <>
+                    <p className="actionHint">플레이어 카드를 눌러 그 대상에게 사용할 행동을 예약하세요.</p>
+                    <div className="actionDockButtons"><button type="button" onClick={() => setShowQueueEditor(true)}>순서 편집</button><button type="button" onClick={cancelAllQueued} disabled={view.myQueuedCards.length === 0}>전체 취소</button><button type="button" className="confirmRoundButton" onClick={confirmRound}>행동 확정</button></div>
+                  </>}
                 </section>
               ) : null}
 
-              {pendingCard ? (
+              {selectedPlayer && !pendingCard && view.phase === "SELECTING_CARDS" && !view.myConfirmed ? (
+                <div className="choiceOverlay" role="dialog" aria-modal="true" aria-label="대상 행동 선택">
+                  <div className="choiceDialog targetActionDialog"><p className="eyebrow">TARGET ACTION</p><h2>{selectedPlayer.playerId === view.selfPlayerId ? "사용할 행동을 선택하세요." : `${selectedPlayer.nickname}에게 어떤 행동을 사용하시겠습니까?`}</h2><p className="dialogLead">현재 손패에서 이 대상에게 사용할 수 있는 카드만 표시됩니다.</p>
+                    <div className="v2CardGrid actionCandidateGrid">{actionCandidates.map((card) => <CardTile key={card.instanceId} card={card} footer={card.definition.targetType === "ENEMY" ? `${selectedPlayer.nickname} 대상` : "자신 / 대상 없음"} onClick={() => chooseHandCard(card)} />)}</div>
+                    {actionCandidates.length === 0 ? <p className="emptyText">이 대상에게 예약할 수 있는 카드가 없습니다.</p> : null}
+                    <div className="dialogActions"><button type="button" onClick={() => setSelectedPlayerId(null)}>닫기</button></div>
+                  </div>
+                </div>
+              ) : null}
+
+              {pendingCard && selectedPlayer ? (
                 <div className="choiceOverlay" role="dialog" aria-modal="true">
-                  <div className="choiceDialog"><p className="eyebrow">CARD SETUP</p><h2>{pendingCard.definition.name}</h2>
-                    {pendingCard.definition.targetType === "ENEMY" ? <div className="choiceList"><h3>대상 선택</h3>{targets.map((target) => <button className={pendingTarget === target.playerId ? "selected" : ""} key={target.playerId} onClick={() => setPendingTarget(target.playerId)}>{target.nickname}<small>HP {formatHp(target.hp)}</small></button>)}</div> : null}
+                  <div className="choiceDialog"><p className="eyebrow">CARD SETUP</p><h2>{pendingCard.definition.name}</h2><p className="dialogLead">{pendingCard.definition.targetType === "ENEMY" ? `${selectedPlayer.nickname}에게 ${pendingCard.definition.name}을 사용합니다.` : `${pendingCard.definition.name}을 사용합니다.`}</p><p>{pendingCard.definition.description}</p>
+                    <div className="stagePicker"><h3>예약할 단계</h3>{([0, 1, 2] as const).map((order) => { const occupied = view.myQueuedCards.some((queued) => queued.order === order); return <button type="button" key={order} className={pendingStage === order ? "selected" : ""} disabled={occupied} onClick={() => setPendingStage(order)}>{order + 1}단계{occupied ? " · 예약됨" : ""}</button>; })}</div>
                     {pendingCard.cardId === "TACTICIAN_RECYCLE" ? <div className="choiceList"><h3>회수할 버린 카드 1장</h3>{view.myDiscardPile.map((card) => <button className={additionalIds.includes(card.instanceId) ? "selected" : ""} key={card.instanceId} onClick={() => setAdditionalIds([card.instanceId])}>{card.definition.name}</button>)}</div> : null}
-                    {pendingCard.cardId === "TACTICIAN_SWAP" ? <div className="choiceList"><h3>버리고 다시 뽑을 손패 최대 2장</h3>{view.myHand.filter((card) => card.instanceId !== pendingCard.instanceId && !queuedIds.has(card.instanceId)).map((card) => <button className={additionalIds.includes(card.instanceId) ? "selected" : ""} key={card.instanceId} onClick={() => setAdditionalIds((current) => current.includes(card.instanceId) ? current.filter((id) => id !== card.instanceId) : current.length < 2 ? [...current, card.instanceId] : current)}>{card.definition.name}</button>)}</div> : null}
-                    {pendingCard.cardId === "TACTICIAN_SIFT" ? <div className="choiceList"><h3>덱 아래로 돌려보낼 손패 1장</h3>{view.myHand.filter((card) => card.instanceId !== pendingCard.instanceId && !queuedIds.has(card.instanceId)).map((card) => <button className={additionalIds.includes(card.instanceId) ? "selected" : ""} key={card.instanceId} onClick={() => setAdditionalIds([card.instanceId])}>{card.definition.name}</button>)}</div> : null}
-                    <div className="dialogActions"><button onClick={() => setPendingCard(null)}>취소</button><button className="primaryButton" onClick={confirmPendingCard} disabled={(pendingCard.definition.targetType === "ENEMY" && !pendingTarget) || (["TACTICIAN_RECYCLE", "TACTICIAN_SIFT"].includes(pendingCard.cardId) && additionalIds.length !== 1)}>예약</button></div>
+                    {pendingCard.cardId === "TACTICIAN_SWAP" ? <div className="choiceList"><h3>버리고 다시 뽑을 손패 최대 2장</h3>{view.myHand.filter((card) => card.instanceId !== pendingCard.instanceId && !queuedIds.has(card.instanceId) && !additionallyReservedIds.has(card.instanceId)).map((card) => <button className={additionalIds.includes(card.instanceId) ? "selected" : ""} key={card.instanceId} onClick={() => setAdditionalIds((current) => current.includes(card.instanceId) ? current.filter((id) => id !== card.instanceId) : current.length < 2 ? [...current, card.instanceId] : current)}>{card.definition.name}</button>)}</div> : null}
+                    {pendingCard.cardId === "TACTICIAN_SIFT" ? <div className="choiceList"><h3>덱 아래로 돌려보낼 손패 1장</h3>{view.myHand.filter((card) => card.instanceId !== pendingCard.instanceId && !queuedIds.has(card.instanceId) && !additionallyReservedIds.has(card.instanceId)).map((card) => <button className={additionalIds.includes(card.instanceId) ? "selected" : ""} key={card.instanceId} onClick={() => setAdditionalIds([card.instanceId])}>{card.definition.name}</button>)}</div> : null}
+                    <div className="dialogActions"><button onClick={() => setPendingCard(null)}>뒤로</button><button className="primaryButton" onClick={confirmPendingCard} disabled={view.myQueuedCards.some((queued) => queued.order === pendingStage) || (pendingCard.definition.targetType === "ENEMY" && !pendingTarget) || (["TACTICIAN_RECYCLE", "TACTICIAN_SIFT"].includes(pendingCard.cardId) && additionalIds.length !== 1)}>예약하기</button></div>
+                  </div>
+                </div>
+              ) : null}
+
+              {showQueueEditor && !view.myConfirmed ? (
+                <div className="choiceOverlay" role="dialog" aria-modal="true" aria-label="예약 순서 편집">
+                  <div className="choiceDialog queueEditor"><p className="eyebrow">QUEUE EDITOR</p><h2>예약 순서 편집</h2>
+                    <div className="queueEditorList">{([0, 1, 2] as const).map((order) => { const queued = view.myQueuedCards.find((entry) => entry.order === order); const card = queued ? view.myHand.find((entry) => entry.instanceId === queued.cardInstanceId) : null; return <article key={order} className={queued ? "filled" : ""}><b>{order + 1}단계</b>{queued && card ? <><div><strong>{card.definition.name}</strong><small>{queued.targetPlayerId ? `→ ${playerNames[queued.targetPlayerId]}` : "자신 / 대상 없음"}</small></div><nav><button type="button" onClick={() => moveQueued(queued.cardInstanceId, Math.max(0, order - 1) as 0 | 1 | 2)} disabled={order === 0}>위로</button><button type="button" onClick={() => moveQueued(queued.cardInstanceId, Math.min(2, order + 1) as 0 | 1 | 2)} disabled={order === 2}>아래로</button><button type="button" onClick={() => removeQueued(queued.cardInstanceId)}>취소</button></nav></> : <span>예약 없음</span>}</article>; })}</div>
+                    <div className="dialogActions"><button type="button" onClick={cancelAllQueued} disabled={view.myQueuedCards.length === 0}>전체 취소</button><button type="button" className="primaryButton" onClick={() => setShowQueueEditor(false)}>편집 완료</button></div>
                   </div>
                 </div>
               ) : null}
@@ -622,6 +737,14 @@ export function MultiplayerGame() {
               <aside className="v2SidePanel combatLogPanel"><div className="panelTitle"><p className="eyebrow">COMBAT LOG</p><h2>완료 기록</h2></div><div className="combatLog">{visibleRecords.length === 0 ? <p className="emptyText">아직 완료된 판정이 없습니다.</p> : visibleRecords.map((record) => <div key={`${record.roundNumber}-${record.sequence.id}`}><small>R{record.roundNumber} · STEP {(record.sequence.stepIndex ?? 0) + 1}</small><p>{describeCombatSequence(record.sequence, playerNames)}</p></div>)}</div>{combatRecords.length > 8 ? <button onClick={() => setShowFullLog((current) => !current)}>{showFullLog ? "최근 8개" : "전체 보기"}</button> : null}</aside>
             </div>
           </div>
+          {deckInspectorMode ? (
+            <DeckInspector
+              view={view}
+              mode={deckInspectorMode}
+              onModeChange={setDeckInspectorMode}
+              onRequestClose={() => setDeckInspectorMode(null)}
+            />
+          ) : null}
         </section>
       )}
     </main>

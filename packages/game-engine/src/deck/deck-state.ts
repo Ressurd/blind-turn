@@ -30,6 +30,7 @@ export function cloneDeckState(state: PlayerDeckState): PlayerDeckState {
     })),
     confirmed: state.confirmed,
     pendingRewardOptions: [...state.pendingRewardOptions],
+    selectedRewardCardId: state.selectedRewardCardId,
     pendingRewardCardId: state.pendingRewardCardId,
     pendingRemovalRequired: state.pendingRemovalRequired,
     pendingInitialHandSelection:
@@ -52,32 +53,45 @@ export function createCardInstance(
 function drawOne(
   state: PlayerDeckState,
   randomSource: RandomSource,
-): ActionCardInstance | null {
-  if (state.hand.length >= MAX_HAND_SIZE) return null;
+): {
+  card: ActionCardInstance | null;
+  reshuffled: { discardCount: number; drawPileCount: number } | null;
+} {
+  if (state.hand.length >= MAX_HAND_SIZE) return { card: null, reshuffled: null };
+  let reshuffled: { discardCount: number; drawPileCount: number } | null = null;
   if (state.drawPile.length === 0 && state.discardPile.length > 0) {
+    const discardCount = state.discardPile.length;
     state.drawPile = randomSource
       .shuffle(state.discardPile)
       .map(cloneCardInstance);
     state.discardPile = [];
+    reshuffled = { discardCount, drawPileCount: state.drawPile.length };
   }
   const card = state.drawPile.shift() ?? null;
   if (card) state.hand.push(card);
-  return card;
+  return { card, reshuffled };
 }
 
 export function drawCards(
   state: PlayerDeckState,
   count: number,
   randomSource: RandomSource,
-): { state: PlayerDeckState; drawn: ActionCardInstance[] } {
+): {
+  state: PlayerDeckState;
+  drawn: ActionCardInstance[];
+  reshuffled: { discardCount: number; drawPileCount: number } | null;
+} {
   const next = cloneDeckState(state);
   const drawn: ActionCardInstance[] = [];
+  let reshuffled: { discardCount: number; drawPileCount: number } | null = null;
   for (let index = 0; index < count; index += 1) {
-    const card = drawOne(next, randomSource);
+    const result = drawOne(next, randomSource);
+    const { card } = result;
+    reshuffled ??= result.reshuffled;
     if (!card) break;
     drawn.push(cloneCardInstance(card));
   }
-  return { state: next, drawn };
+  return { state: next, drawn, reshuffled };
 }
 
 export function createInitialDeckState(
@@ -95,6 +109,7 @@ export function createInitialDeckState(
     queuedCards: [],
     confirmed: false,
     pendingRewardOptions: [],
+    selectedRewardCardId: null,
     pendingRewardCardId: null,
     pendingRemovalRequired: false,
     pendingInitialHandSelection: [],

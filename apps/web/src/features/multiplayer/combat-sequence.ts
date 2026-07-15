@@ -4,7 +4,7 @@ import {
   type PublicBattleEvent,
 } from "@blind-turn/shared";
 
-export type CombatSequenceType = "ROUND" | "STEP" | "GAME_OVER";
+export type CombatSequenceType = "ROUND" | "STEP" | "DECK" | "ROUND_SUMMARY" | "GAME_OVER";
 
 export type CombatOutcome =
   | "STARTED"
@@ -52,6 +52,19 @@ export type CombatCardReveal = {
   targetPlayerId?: string;
 };
 
+export type CombatReshuffle = {
+  playerId: string;
+  discardCount: number;
+  shuffledCount: number;
+};
+
+export type CombatDraw = {
+  playerId: string;
+  count: number;
+  drawPileCount: number;
+  handCount: number;
+};
+
 export type CombatSequence = {
   id: string;
   type: CombatSequenceType;
@@ -65,6 +78,8 @@ export type CombatSequence = {
   rolls: CombatRoll[];
   damages: CombatDamage[];
   heals: CombatHeal[];
+  reshuffles: CombatReshuffle[];
+  draws: CombatDraw[];
   deathPlayerIds: string[];
   winnerId: string | null;
   loserId: string | null;
@@ -75,12 +90,27 @@ export type CombatSequence = {
 
 export type CombatDisplayPlayer = { hp: number; alive: boolean; maxHp?: number };
 export type CombatDisplayState = Record<string, CombatDisplayPlayer>;
+export type CombatDeckDisplayPlayer = {
+  handCount: number;
+  drawPileCount: number;
+  discardPileCount: number;
+  totalDeckCount: number;
+};
+export type CombatDeckDisplayState = Record<string, CombatDeckDisplayPlayer>;
 
 type PlayerLike = {
   playerId: string;
   hp: number;
   alive: boolean;
   maxHp?: number;
+};
+
+type DeckPlayerLike = {
+  playerId: string;
+  handCount: number;
+  drawPileCount: number;
+  discardPileCount: number;
+  totalDeckCount: number;
 };
 
 function unique(values: Array<string | undefined>): string[] {
@@ -131,6 +161,18 @@ function buildStepSequence(
   const healEvents = events.filter(
     (event): event is Extract<PublicBattleEvent, { type: "HEAL_APPLIED" }> =>
       event.type === "HEAL_APPLIED",
+  );
+  const reshuffleStarts = events.filter(
+    (event): event is Extract<PublicBattleEvent, { type: "DISCARD_RESHUFFLE_STARTED" }> =>
+      event.type === "DISCARD_RESHUFFLE_STARTED",
+  );
+  const reshuffleFinishes = events.filter(
+    (event): event is Extract<PublicBattleEvent, { type: "DISCARD_RESHUFFLED" }> =>
+      event.type === "DISCARD_RESHUFFLED",
+  );
+  const drawEvents = events.filter(
+    (event): event is Extract<PublicBattleEvent, { type: "CARD_DRAWN" }> =>
+      event.type === "CARD_DRAWN",
   );
   const actorIds = unique(cards.map((card) => card.playerId));
   const targetIds = unique([
@@ -210,6 +252,19 @@ function buildStepSequence(
       previousHp: Math.max(0, event.remainingHp - event.amount),
       remainingHp: event.remainingHp,
     })),
+    reshuffles: reshuffleStarts.map((event) => ({
+      playerId: event.playerId,
+      discardCount: event.discardCount,
+      shuffledCount: reshuffleFinishes.find(
+        (finish) => finish.playerId === event.playerId,
+      )?.drawPileCount ?? event.discardCount,
+    })),
+    draws: drawEvents.map((event) => ({
+      playerId: event.playerId,
+      count: event.count,
+      drawPileCount: event.drawPileCount,
+      handCount: event.handCount,
+    })),
     deathPlayerIds: events.flatMap((event) =>
       event.type === "PLAYER_DIED" ? [event.playerId] : []),
     winnerId: clash?.winnerId ?? null,
@@ -241,6 +296,8 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
         rolls: [],
         damages: [],
         heals: [],
+        reshuffles: [],
+        draws: [],
         deathPlayerIds: [],
         winnerId: null,
         loserId: null,
@@ -249,6 +306,65 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
         events: [event],
       });
       index += 1;
+      continue;
+    }
+    if (event.type === "DISCARD_RESHUFFLE_STARTED" || event.type === "CARD_DRAWN") {
+      const playerId = event.playerId;
+      let end = index;
+      while (end + 1 < events.length) {
+        const nextEvent = events[end + 1]!;
+        if (
+          !["DISCARD_RESHUFFLE_STARTED", "DISCARD_RESHUFFLED", "CARD_DRAWN"].includes(nextEvent.type)
+          || !("playerId" in nextEvent)
+          || nextEvent.playerId !== playerId
+        ) break;
+        end += 1;
+      }
+      const deckEvents = events.slice(index, end + 1);
+      const start = deckEvents.find(
+        (candidate): candidate is Extract<PublicBattleEvent, { type: "DISCARD_RESHUFFLE_STARTED" }> =>
+          candidate.type === "DISCARD_RESHUFFLE_STARTED",
+      );
+      const finish = deckEvents.find(
+        (candidate): candidate is Extract<PublicBattleEvent, { type: "DISCARD_RESHUFFLED" }> =>
+          candidate.type === "DISCARD_RESHUFFLED",
+      );
+      const draws = deckEvents.filter(
+        (candidate): candidate is Extract<PublicBattleEvent, { type: "CARD_DRAWN" }> =>
+          candidate.type === "CARD_DRAWN",
+      );
+      sequences.push({
+        id: `round-${currentRound}-deck-${playerId}-${index}`,
+        type: "DECK",
+        roundNumber: currentRound,
+        stepIndex: null,
+        actorId: playerId,
+        actorIds: [playerId],
+        targetIds: [],
+        outcome: "UTILITY",
+        cards: [],
+        rolls: [],
+        damages: [],
+        heals: [],
+        reshuffles: start ? [{
+          playerId,
+          discardCount: start.discardCount,
+          shuffledCount: finish?.drawPileCount ?? start.discardCount,
+        }] : [],
+        draws: draws.map((draw) => ({
+          playerId,
+          count: draw.count,
+          drawPileCount: draw.drawPileCount,
+          handCount: draw.handCount,
+        })),
+        deathPlayerIds: [],
+        winnerId: null,
+        loserId: null,
+        counterActorId: null,
+        originalEventRange: { start: index, end },
+        events: deckEvents,
+      });
+      index = end + 1;
       continue;
     }
     if (event.type === "STEP_STARTED") {
@@ -274,8 +390,34 @@ export function buildCombatSequences(events: PublicBattleEvent[]): CombatSequenc
         rolls: [],
         damages: [],
         heals: [],
+        reshuffles: [],
+        draws: [],
         deathPlayerIds: [],
         winnerId: event.result.type === "WINNER" ? event.result.winnerPlayerId : null,
+        loserId: null,
+        counterActorId: null,
+        originalEventRange: { start: index, end: index },
+        events: [event],
+      });
+    }
+    if (event.type === "ROUND_FINISHED") {
+      sequences.push({
+        id: `round-${event.roundNumber}-summary`,
+        type: "ROUND_SUMMARY",
+        roundNumber: event.roundNumber,
+        stepIndex: null,
+        actorId: null,
+        actorIds: [],
+        targetIds: [],
+        outcome: "FINISHED",
+        cards: [],
+        rolls: [],
+        damages: [],
+        heals: [],
+        reshuffles: [],
+        draws: [],
+        deathPlayerIds: [],
+        winnerId: null,
         loserId: null,
         counterActorId: null,
         originalEventRange: { start: index, end: index },
@@ -293,6 +435,67 @@ export function createCombatDisplayState(players: PlayerLike[]): CombatDisplaySt
     alive: player.alive,
     ...(player.maxHp === undefined ? {} : { maxHp: player.maxHp }),
   }]));
+}
+
+export function createCombatDeckDisplayState(
+  players: DeckPlayerLike[],
+): CombatDeckDisplayState {
+  return Object.fromEntries(players.map((player) => [player.playerId, {
+    handCount: player.handCount,
+    drawPileCount: player.drawPileCount,
+    discardPileCount: player.discardPileCount,
+    totalDeckCount: player.totalDeckCount,
+  }]));
+}
+
+export function synchronizeCombatDeckDisplayState(
+  state: CombatDeckDisplayState,
+): CombatDeckDisplayState {
+  return Object.fromEntries(
+    Object.entries(state).map(([playerId, player]) => [playerId, { ...player }]),
+  );
+}
+
+export function applyDeckPlaybackStage(
+  state: CombatDeckDisplayState,
+  sequence: CombatSequence,
+  stage: "reshuffle-start" | "reshuffle-complete" | "draw",
+): CombatDeckDisplayState {
+  const next = synchronizeCombatDeckDisplayState(state);
+  if (stage === "reshuffle-start") {
+    for (const reshuffle of sequence.reshuffles) {
+      const current = next[reshuffle.playerId];
+      if (!current) continue;
+      next[reshuffle.playerId] = {
+        ...current,
+        drawPileCount: 0,
+        discardPileCount: reshuffle.discardCount,
+      };
+    }
+  }
+  if (stage === "reshuffle-complete") {
+    for (const reshuffle of sequence.reshuffles) {
+      const current = next[reshuffle.playerId];
+      if (!current) continue;
+      next[reshuffle.playerId] = {
+        ...current,
+        drawPileCount: reshuffle.shuffledCount,
+        discardPileCount: 0,
+      };
+    }
+  }
+  if (stage === "draw") {
+    for (const draw of sequence.draws) {
+      const current = next[draw.playerId];
+      if (!current) continue;
+      next[draw.playerId] = {
+        ...current,
+        handCount: draw.handCount,
+        drawPileCount: draw.drawPileCount,
+      };
+    }
+  }
+  return next;
 }
 
 export function hydrateCombatDamageTransitions(
@@ -379,6 +582,13 @@ export function describeCombatSequence(
   const name = (playerId: string | null | undefined) =>
     playerId ? names[playerId] ?? "플레이어" : "플레이어";
   if (sequence.type === "ROUND") return `${sequence.roundNumber}라운드가 시작되었습니다.`;
+  if (sequence.type === "ROUND_SUMMARY") return `${sequence.roundNumber}라운드 판정이 끝났습니다.`;
+  if (sequence.type === "DECK") {
+    const reshuffle = sequence.reshuffles[0];
+    const draw = sequence.draws[0];
+    if (reshuffle) return `${name(reshuffle.playerId)}님의 무덤 ${reshuffle.discardCount}장을 덱으로 다시 섞었습니다.`;
+    return `${name(draw?.playerId)}님이 카드 ${draw?.count ?? 0}장을 뽑았습니다.`;
+  }
   if (sequence.type === "GAME_OVER") {
     return sequence.winnerId ? `${name(sequence.winnerId)}님이 승리했습니다.` : "무승부로 끝났습니다.";
   }

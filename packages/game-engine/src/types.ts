@@ -87,6 +87,7 @@ export type PlayerDeckState = {
   queuedCards: QueuedCardAction[];
   confirmed: boolean;
   pendingRewardOptions: string[];
+  selectedRewardCardId: string | null;
   pendingRewardCardId: string | null;
   pendingRemovalRequired: boolean;
   pendingInitialHandSelection: ActionCardInstance[];
@@ -235,7 +236,23 @@ export type BattleEvent =
   | { type: "PLAYER_DIED"; stepIndex: number; playerId: string }
   | { type: "STEP_FINISHED"; roundNumber: number; stepIndex: number }
   | { type: "ROUND_FINISHED"; roundNumber: number }
-  | { type: "PRIVATE_CARD_DRAWN"; playerId: string; count: number }
+  | {
+      type: "DISCARD_RESHUFFLE_STARTED";
+      playerId: string;
+      discardCount: number;
+    }
+  | {
+      type: "DISCARD_RESHUFFLED";
+      playerId: string;
+      drawPileCount: number;
+    }
+  | {
+      type: "CARD_DRAWN";
+      playerId: string;
+      count: number;
+      drawPileCount: number;
+      handCount: number;
+    }
   | { type: "GAME_FINISHED"; result: GameResult };
 
 export type GameState = {

@@ -27,6 +27,10 @@ type CombatStageProps = {
   onTogglePause: () => void;
   onSpeedChange: (speed: CombatPlaybackSpeed) => void;
   onSkip: () => void;
+  selectionEnabled?: boolean;
+  selectedPlayerId?: string | null;
+  reservationLabels?: Record<string, string[]>;
+  onPlayerSelect?: (playerId: string) => void;
 };
 
 type Line = { x1: number; y1: number; x2: number; y2: number };
@@ -49,6 +53,40 @@ function presentation(
     detail: "1단계부터 최대 3단계까지 순서대로 처리합니다.",
     tone: "round",
   };
+  if (sequence.type === "ROUND_SUMMARY") return {
+    eyebrow: `ROUND ${sequence.roundNumber} · COMPLETE`,
+    title: `${sequence.roundNumber}라운드 판정 완료`,
+    detail: "모든 단계의 결과와 체력 변경이 반영되었습니다.",
+    tone: "result",
+  };
+  if (sequence.type === "DECK" || stage.startsWith("reshuffle") || stage === "draw") {
+    const reshuffle = sequence.reshuffles[0];
+    const draw = sequence.draws[0];
+    if (stage === "reshuffle-start") return {
+      eyebrow: "DECK EMPTY",
+      title: "덱이 비었습니다",
+      detail: `무덤 ${reshuffle?.discardCount ?? 0}장을 다시 준비합니다.`,
+      tone: "deck",
+    };
+    if (stage === "reshuffle-shuffle") return {
+      eyebrow: "RESHUFFLE",
+      title: "무덤의 카드를 다시 섞습니다",
+      detail: "드로우 순서는 공개되지 않습니다.",
+      tone: "deck",
+    };
+    if (stage === "reshuffle-complete") return {
+      eyebrow: "DECK RESTORED",
+      title: `덱 ${reshuffle?.shuffledCount ?? 0}장 · 무덤 0장`,
+      detail: "셔플이 완료되었습니다.",
+      tone: "deck",
+    };
+    if (stage === "draw") return {
+      eyebrow: "CARD DRAW",
+      title: `카드 ${draw?.count ?? 0}장을 뽑았습니다`,
+      detail: `손패 ${draw?.handCount ?? 0}장 · 덱 ${draw?.drawPileCount ?? 0}장`,
+      tone: "deck",
+    };
+  }
   if (sequence.type === "GAME_OVER") return {
     eyebrow: "BATTLE COMPLETE",
     title: sequence.winnerId ? `${name(sequence.winnerId)} 승리` : "무승부",
@@ -124,11 +162,19 @@ export function CombatStage(props: CombatStageProps) {
     [props.players],
   );
   const copy = presentation(props.sequence, props.stage, names);
-  const sourceId = props.sequence?.actorId ?? null;
-  const targetId = props.sequence?.targetIds[0] ?? null;
-  const showLine = props.isPlaying
-    && Boolean(sourceId && targetId)
-    && ["reveal", "roll", "impact", "damage"].includes(props.stage);
+  const selectedTargetId = props.selectionEnabled ? props.selectedPlayerId ?? null : null;
+  const sourceId = props.isPlaying
+    ? props.sequence?.actorId ?? null
+    : selectedTargetId && selectedTargetId !== props.selfPlayerId
+      ? props.selfPlayerId
+      : null;
+  const targetId = props.isPlaying
+    ? props.sequence?.targetIds[0] ?? null
+    : selectedTargetId;
+  const showLine = Boolean(sourceId && targetId) && (
+    (props.isPlaying && ["reveal", "roll", "impact", "damage"].includes(props.stage))
+    || (!props.isPlaying && props.selectionEnabled)
+  );
 
   useLayoutEffect(() => {
     const update = () => {
@@ -188,8 +234,8 @@ export function CombatStage(props: CombatStageProps) {
 
       {props.sequence?.cards.length ? (
         <div className="combatReveals">
-          {props.sequence.cards.map((card) => (
-            <div key={card.cardInstanceId}>
+          {props.sequence.cards.map((card, index) => (
+            <div key={card.cardInstanceId} style={{ animationDelay: `${index * (700 / props.speed)}ms` }}>
               <span>{names[card.playerId]}</span>
               <strong>{card.cardName}</strong>
               {card.targetPlayerId ? <small>→ {names[card.targetPlayerId]}</small> : null}
@@ -207,6 +253,18 @@ export function CombatStage(props: CombatStageProps) {
               <small>{roll.kind === "CLASH" ? `${roll.roll} + ${roll.bonus}` : `회피 ${roll.roll}+${roll.bonus} / 난이도 ${roll.difficulty}`}</small>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {props.sequence && (
+        props.sequence.reshuffles.length > 0
+        || props.sequence.draws.length > 0
+      ) && ["reshuffle-start", "reshuffle-shuffle", "reshuffle-complete", "draw"].includes(props.stage) ? (
+        <div className={`deckPlayback deck-stage-${props.stage}`}>
+          <div className="deckPlaybackPile grave"><span>무덤</span><strong>{props.stage === "reshuffle-start" ? props.sequence.reshuffles[0]?.discardCount ?? 0 : 0}</strong></div>
+          <div className="deckShuffleCards" aria-hidden="true"><i /><i /><i /><i /></div>
+          <div className="deckPlaybackArrow">→</div>
+          <div className="deckPlaybackPile draw"><span>덱</span><strong>{props.stage === "draw" ? props.sequence.draws[0]?.drawPileCount ?? 0 : props.sequence.reshuffles[0]?.shuffledCount ?? 0}</strong></div>
         </div>
       ) : null}
 
@@ -240,7 +298,8 @@ export function CombatStage(props: CombatStageProps) {
             const relevant = actor || target || Boolean(damage) || Boolean(heal);
             const character = player.characterId ? CHARACTER_CATALOG[player.characterId] : null;
             return (
-              <article
+              <button
+                type="button"
                 key={player.playerId}
                 ref={(node) => {
                   if (node) cardRefs.current.set(player.playerId, node);
@@ -249,6 +308,8 @@ export function CombatStage(props: CombatStageProps) {
                 className={[
                   "onlinePlayerCard",
                   player.playerId === props.selfPlayerId ? "self" : "",
+                  props.selectedPlayerId === player.playerId ? "player-selection-active" : "",
+                  props.selectionEnabled && shown.alive ? "player-selectable" : "",
                   !shown.alive ? "dead" : "",
                   props.isPlaying && !relevant ? "combat-inactive" : "",
                   actor ? "combat-actor-active" : "",
@@ -257,6 +318,9 @@ export function CombatStage(props: CombatStageProps) {
                   dying ? "combat-death" : "",
                   props.sequence?.outcome === "EVADE_SUCCESS" && target ? "combat-dodge" : "",
                 ].filter(Boolean).join(" ")}
+                disabled={!props.selectionEnabled || !shown.alive || props.isPlaying}
+                aria-pressed={props.selectedPlayerId === player.playerId}
+                onClick={() => props.onPlayerSelect?.(player.playerId)}
               >
                 <div className="onlinePlayerHead">
                   <span className="seatBadge">{player.seatNumber}</span>
@@ -279,6 +343,11 @@ export function CombatStage(props: CombatStageProps) {
                   <span>{player.usedCardCount === null ? "QUEUE" : "USED"}</span>
                   <strong>{player.usedCardCount === null ? (player.submitted ? "LOCKED" : "HIDDEN") : `${player.usedCardCount} CARD`}</strong>
                 </div>
+                {(props.reservationLabels?.[player.playerId]?.length ?? 0) > 0 ? (
+                  <div className="privateReservationBadge">
+                    {props.reservationLabels![player.playerId]!.map((label) => <span key={label}>내 예약 · {label}</span>)}
+                  </div>
+                ) : null}
                 {hit ? <i className="combatImpactBurst" /> : null}
                 {damage && props.stage === "damage" ? (
                   <div className="combat-damage-float">
@@ -291,7 +360,7 @@ export function CombatStage(props: CombatStageProps) {
                 {heal && props.stage === "damage" ? (
                   <div className="combat-heal-float"><strong>+{formatHp(heal.amount)}</strong></div>
                 ) : null}
-              </article>
+              </button>
             );
           })}
         </div>

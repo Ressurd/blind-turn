@@ -9,6 +9,7 @@ import {
   createGame,
   haveAllAlivePlayersConfirmed,
   hasPendingInitialHandSelection,
+  moveQueuedCard,
   queueCard,
   removeQueuedCard,
   reorderQueuedCards,
@@ -97,10 +98,29 @@ export class GameSession {
   queue(
     playerId: string,
     roundNumber: number,
-    input: Omit<QueuedCardAction, "order">,
+    input: Omit<QueuedCardAction, "order"> & { order?: 0 | 1 | 2 },
   ): void {
     try {
       this.state = queueCard(this.getState(), playerId, roundNumber, input);
+    } catch (error) {
+      asRoomError(error);
+    }
+  }
+
+  moveQueued(
+    playerId: string,
+    roundNumber: number,
+    instanceId: string,
+    order: 0 | 1 | 2,
+  ): void {
+    try {
+      this.state = moveQueuedCard(
+        this.getState(),
+        playerId,
+        roundNumber,
+        instanceId,
+        order,
+      );
     } catch (error) {
       asRoomError(error);
     }

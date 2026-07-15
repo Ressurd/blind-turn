@@ -8,10 +8,41 @@ import {
 } from "../deck/deck-state";
 import { ProductionRandomSource, type RandomSource } from "../random";
 import type {
+  BattleEvent,
   CreatePlayerInput,
   GameState,
   PlayerState,
 } from "../types";
+
+function appendDrawEvents(
+  events: BattleEvent[],
+  playerId: string,
+  drawn: ReturnType<typeof drawCards>,
+): void {
+  if (drawn.reshuffled) {
+    events.push(
+      {
+        type: "DISCARD_RESHUFFLE_STARTED",
+        playerId,
+        discardCount: drawn.reshuffled.discardCount,
+      },
+      {
+        type: "DISCARD_RESHUFFLED",
+        playerId,
+        drawPileCount: drawn.reshuffled.drawPileCount,
+      },
+    );
+  }
+  if (drawn.drawn.length > 0) {
+    events.push({
+      type: "CARD_DRAWN",
+      playerId,
+      count: drawn.drawn.length,
+      drawPileCount: drawn.state.drawPile.length,
+      handCount: drawn.state.hand.length,
+    });
+  }
+}
 
 function validatePlayers(players: readonly CreatePlayerInput[]): void {
   if (players.length < MIN_PLAYERS || players.length > MAX_PLAYERS) {
@@ -121,13 +152,7 @@ export function startRound(
     deckState.confirmed = false;
     if (next.roundNumber === 1) return { ...player, deckState };
     const drawn = drawCards(deckState, 1, randomSource);
-    if (drawn.drawn.length > 0) {
-      next.pendingEvents.push({
-        type: "PRIVATE_CARD_DRAWN",
-        playerId: player.id,
-        count: drawn.drawn.length,
-      });
-    }
+    appendDrawEvents(next.pendingEvents, player.id, drawn);
     return { ...player, deckState: drawn.state };
   });
   return next;

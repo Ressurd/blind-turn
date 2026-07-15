@@ -19,14 +19,14 @@ sequenceDiagram
   participant R as RoomManager
   participant G as GameSession
   participant E as RoundResolver
-  C->>S: game:queue-card / reorder / confirm-round
+  C->>S: game:queue-card / move-queued-card / confirm-round
   S->>R: Zod payload + socket ownership 검증
   R->>G: private queue mutation
   R-->>C: owner-only queue update
   R->>G: all confirmed or 60s timeout
   G->>E: resolveRound(state, RandomSource)
   E-->>G: final GameState + BattleEvent[]
-  G-->>S: PRIVATE_CARD_DRAWN 제거
+  G-->>S: 카드 종류가 없는 CARD_DRAWN/재셔플 이벤트
   S-->>C: card-counts-revealed + round-resolved
   C->>S: events-finished
   S-->>C: next-round or private reward options
@@ -39,10 +39,10 @@ sequenceDiagram
 `PlayerState.deckState`가 각 플레이어 카드의 단일 원본입니다.
 
 - `drawPile`, `hand`, `discardPile`
-- `queuedCards`: 확정 전 0~3장과 대상/추가 선택
+- `queuedCards`: 확정 전 0~3장과 명시적 단계(0~2), 대상/추가 선택
 - `confirmed`
 - `pendingInitialHandSelection`: 전술가 시작 4장
-- `pendingRewardOptions`, `pendingRewardCardId`, `pendingRemovalRequired`
+- `pendingRewardOptions`, `selectedRewardCardId`, `pendingRewardCardId`, `pendingRemovalRequired`
 
 `GameState.phase`는 `ROUND_STARTING → SELECTING_CARDS → RESOLVING_ROUND → (SELECTING_REWARD → SELECTING_DECK_REMOVAL) → ROUND_STARTING`으로 이동하며 생존자가 1명 이하이면 `FINISHED`가 됩니다.
 
@@ -65,15 +65,15 @@ sequenceDiagram
 공개:
 
 - 닉네임, 좌석, 캐릭터, 연결/준비, HP/생존
-- 손패 장수와 확정 여부
+- 손패/뽑기/버림/전체 덱 장수와 확정 여부
 - 라운드 잠금 이후에만 사용 카드 장수
 - 완료된 공개 BattleEvent, 결과, 채팅
 
 본인 전용:
 
 - 손패/버린 카드의 instanceId와 정의
+- 뽑기 더미의 카드 종류별 수량 집계와 전체 덱 위치별 집계
 - 큐의 카드, 순서, 대상과 추가 선택
-- 뽑기/버림 더미 장수
 - 전술가 시작 선택지, 보상 3장, 제거 후보
 
 미공개:
@@ -82,12 +82,12 @@ sequenceDiagram
 - 뽑기 더미 순서와 서버 난수 상태
 - reconnectToken과 전체 GameState
 
-`PRIVATE_CARD_DRAWN`은 공개 이벤트에서 제거됩니다. 합/회피 주사위는 판정 후에만 공개됩니다.
+`CARD_DRAWN`과 재셔플 이벤트에는 카드 종류나 순서가 없고 장수만 들어갑니다. 상대 뷰에는 더미별 장수만 제공되며, 합/회피 주사위는 판정 후에만 공개됩니다.
 
 ## RoomManager와 타이머
 
 - 행동 선택: 서버 기준 60초. 미확정 플레이어는 카드 0장으로 확정
-- 전투 재생: 연결된 플레이어의 완료 신호 또는 8초 후 자동 진행
+- 전투 재생: 연결된 플레이어의 완료 신호 또는 45초 후 자동 진행
 - 보상/덱 제거: 서버 기준 각각 30초. 미선택은 서버가 유효한 선택을 자동 적용
 - 로비 연결 해제: 30초 뒤 제거
 - 전원 연결 해제 방: 10분 뒤 삭제

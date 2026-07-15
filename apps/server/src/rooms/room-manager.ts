@@ -347,10 +347,23 @@ export class RoomManager {
     playerId: string,
     socketId: string,
     roundNumber: number,
-    input: Omit<QueuedCardAction, "order">,
+    input: Omit<QueuedCardAction, "order"> & { order?: 0 | 1 | 2 },
   ): void {
     const room = this.requireSelectingRoom(roomCode, playerId, socketId);
     room.game!.queue(playerId, roundNumber, input);
+    this.emitQueueUpdated(room, playerId);
+  }
+
+  moveQueuedCard(
+    roomCode: string,
+    playerId: string,
+    socketId: string,
+    roundNumber: number,
+    cardInstanceId: string,
+    order: 0 | 1 | 2,
+  ): void {
+    const room = this.requireSelectingRoom(roomCode, playerId, socketId);
+    room.game!.moveQueued(playerId, roundNumber, cardInstanceId, order);
     this.emitQueueUpdated(room, playerId);
   }
 

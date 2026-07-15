@@ -2,12 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HP_SCALE, type PublicBattleEvent } from "@blind-turn/shared";
 import {
   applyCombatDamage,
+  applyDeckPlaybackStage,
   buildCombatSequences,
   createCombatDisplayState,
+  createCombatDeckDisplayState,
   hydrateCombatDamageTransitions,
   synchronizeCombatDisplayState,
 } from "../src/features/multiplayer/combat-sequence";
-import { createPlaybackTimer } from "../src/features/multiplayer/use-combat-playback";
+import {
+  COMBAT_PLAYBACK_TIMINGS,
+  createPlaybackTimer,
+  getCombatPlaybackSteps,
+  scalePlaybackDuration,
+} from "../src/features/multiplayer/use-combat-playback";
 
 const hp = (value: number) => value * HP_SCALE;
 const step = (body: PublicBattleEvent[], stepIndex = 0): PublicBattleEvent[] => [
@@ -111,6 +118,23 @@ describe("combat display state", () => {
     expect(synchronized).not.toBe(serverState);
     expect(synchronized.b).not.toBe(serverState.b);
   });
+
+  it("updates deck display state in reshuffle then draw order", () => {
+    const sequence = buildCombatSequences([
+      { type: "DISCARD_RESHUFFLE_STARTED", playerId: "a", discardCount: 6 },
+      { type: "DISCARD_RESHUFFLED", playerId: "a", drawPileCount: 6 },
+      { type: "CARD_DRAWN", playerId: "a", count: 1, drawPileCount: 5, handCount: 4 },
+    ])[0]!;
+    const initial = createCombatDeckDisplayState([
+      { playerId: "a", handCount: 3, drawPileCount: 0, discardPileCount: 6, totalDeckCount: 9 },
+    ]);
+    const started = applyDeckPlaybackStage(initial, sequence, "reshuffle-start");
+    const shuffled = applyDeckPlaybackStage(started, sequence, "reshuffle-complete");
+    const drawn = applyDeckPlaybackStage(shuffled, sequence, "draw");
+    expect(started.a).toMatchObject({ handCount: 3, drawPileCount: 0, discardPileCount: 6 });
+    expect(shuffled.a).toMatchObject({ handCount: 3, drawPileCount: 6, discardPileCount: 0 });
+    expect(drawn.a).toMatchObject({ handCount: 4, drawPileCount: 5, discardPileCount: 0 });
+  });
 });
 
 describe("playback timer lifecycle", () => {
@@ -125,5 +149,50 @@ describe("playback timer lifecycle", () => {
     vi.advanceTimersByTime(1_000);
     expect(timer.hasPending()).toBe(false);
     expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("uses slower non-overlapping sequence stages and scales only their duration", () => {
+    const [sequence] = buildCombatSequences(step([
+      { type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "a", cardInstanceId: "a1", cardId: "BASE_QUICK_STRIKE", targetPlayerId: "b" },
+      { type: "EVADE_ROLLED", stepIndex: 0, playerId: "b", attackerId: "a", roll: 7, bonus: 0, difficulty: 8, succeeded: false },
+      { type: "DAMAGE_APPLIED", stepIndex: 0, playerId: "b", damage: hp(10), remainingHp: hp(20), source: "EVADE_FAILURE" },
+    ]));
+    const steps = getCombatPlaybackSteps(sequence!);
+    expect(steps.map((entry) => entry.stage)).toEqual(["reveal", "roll", "impact", "damage", "result"]);
+    expect(steps[0]!.durationMs).toBe(COMBAT_PLAYBACK_TIMINGS.cardRevealBase + COMBAT_PLAYBACK_TIMINGS.cardRevealEach);
+    expect(scalePlaybackDuration(1_800, 1)).toBe(1_800);
+    expect(scalePlaybackDuration(1_800, 1.5)).toBe(1_200);
+    expect(scalePlaybackDuration(1_800, 2)).toBe(900);
+  });
+
+  it("places reshuffle stages before draw and includes a round-end summary", () => {
+    const sequences = buildCombatSequences([
+      { type: "ROUND_STARTED", roundNumber: 4 },
+      { type: "DISCARD_RESHUFFLE_STARTED", playerId: "a", discardCount: 6 },
+      { type: "DISCARD_RESHUFFLED", playerId: "a", drawPileCount: 6 },
+      { type: "CARD_DRAWN", playerId: "a", count: 1, drawPileCount: 5, handCount: 4 },
+      { type: "ROUND_FINISHED", roundNumber: 4 },
+    ]);
+    expect(sequences.map((sequence) => sequence.type)).toEqual(["ROUND", "DECK", "ROUND_SUMMARY"]);
+    expect(getCombatPlaybackSteps(sequences[1]!).map((entry) => entry.stage)).toEqual([
+      "reveal",
+      "reshuffle-start",
+      "reshuffle-shuffle",
+      "reshuffle-complete",
+      "draw",
+      "result",
+    ]);
+    expect(getCombatPlaybackSteps(sequences[2]!)).toEqual([
+      { stage: "result", durationMs: COMBAT_PLAYBACK_TIMINGS.roundSummary },
+    ]);
+  });
+
+  it("keeps consecutive step sequences in distinct event ranges", () => {
+    const sequences = buildCombatSequences([
+      ...step([{ type: "CARD_REVEALED", roundNumber: 1, stepIndex: 0, playerId: "a", cardInstanceId: "a1", cardId: "BASE_GUARD" }], 0),
+      ...step([{ type: "CARD_REVEALED", roundNumber: 1, stepIndex: 1, playerId: "b", cardInstanceId: "b1", cardId: "BASE_EVADE" }], 1),
+    ]);
+    expect(sequences).toHaveLength(2);
+    expect(sequences[0]!.originalEventRange.end).toBeLessThan(sequences[1]!.originalEventRange.start);
   });
 });

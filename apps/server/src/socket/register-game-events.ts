@@ -2,6 +2,7 @@ import {
   ConfirmRoundPayloadSchema,
   EventsFinishedPayloadSchema,
   InitialHandSelectionPayloadSchema,
+  MoveQueuedCardPayloadSchema,
   QueueCardPayloadSchema,
   RemoveQueuedCardPayloadSchema,
   ReorderQueuedCardsPayloadSchema,
@@ -39,9 +40,26 @@ export function registerGameEvents(
       const session = requireSocketSession(socket, parsed.roomCode);
       roomManager.queueCard(parsed.roomCode, session.playerId, socket.id, parsed.roundNumber, {
         cardInstanceId: parsed.cardInstanceId,
+        ...(parsed.order === undefined ? {} : { order: parsed.order }),
         ...(parsed.targetPlayerId ? { targetPlayerId: parsed.targetPlayerId } : {}),
         additionalSelection: parsed.additionalSelection ?? null,
       });
+      return { accepted: true as const };
+    }, logger);
+  });
+
+  socket.on("game:move-queued-card", (payload, ack) => {
+    runSocketRequest(socket, "game", ack, () => {
+      const parsed = parsePayload(MoveQueuedCardPayloadSchema, payload);
+      const session = requireSocketSession(socket, parsed.roomCode);
+      roomManager.moveQueuedCard(
+        parsed.roomCode,
+        session.playerId,
+        socket.id,
+        parsed.roundNumber,
+        parsed.cardInstanceId,
+        parsed.order,
+      );
       return { accepted: true as const };
     }, logger);
   });

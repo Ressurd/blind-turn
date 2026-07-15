@@ -16,7 +16,7 @@ export const ROOM_CODE_LENGTH = 6;
 export const MAX_ROOM_PLAYERS = 6;
 export const MIN_GAME_PLAYERS = 2;
 export { ACTION_TIMEOUT_MS, REWARD_TIMEOUT_MS };
-export const EVENTS_FINISH_TIMEOUT_MS = 8_000;
+export const EVENTS_FINISH_TIMEOUT_MS = 45_000;
 export const DISCONNECT_GRACE_MS = 30_000;
 export const ABANDONED_ROOM_TTL_MS = 10 * 60_000;
 export const CHAT_MESSAGE_MAX_LENGTH = 100;
@@ -108,12 +108,30 @@ export type RoomPlayerView = {
   maxHp: number;
   handCount: number;
   maxHandSize: number;
+  drawPileCount: number;
+  discardPileCount: number;
+  totalDeckCount: number;
   submitted: boolean;
   usedCardCount: number | null;
 };
 
 export type PrivateCardView = ActionCardInstance & {
   definition: CardDefinition;
+};
+
+export type PrivateDeckCardSummary = {
+  cardId: string;
+  definition: CardDefinition;
+  totalCount: number;
+  handCount: number;
+  drawPileCount: number;
+  discardPileCount: number;
+  queuedCount: number;
+};
+
+export type RewardSelectionStatus = {
+  selectedPlayerCount: number;
+  totalPlayerCount: number;
 };
 
 export type PlayerGameView = {
@@ -126,12 +144,18 @@ export type PlayerGameView = {
   myCharacterId: CharacterClassId | null;
   myHand: PrivateCardView[];
   myDiscardPile: PrivateCardView[];
+  myDrawPileSummary: PrivateDeckCardSummary[];
+  myDeckSummary: PrivateDeckCardSummary[];
   myQueuedCards: QueuedCardAction[];
   myConfirmed: boolean;
   drawPileCount: number;
   discardPileCount: number;
+  totalDeckCount: number;
+  maxDeckSize: number;
   initialHandOptions: PrivateCardView[];
   rewardOptions: CardDefinition[];
+  selectedReward: CardDefinition | null;
+  rewardSelectionStatus: RewardSelectionStatus | null;
   deckRemovalCandidates: PrivateCardView[];
   actionDeadlineAt: number | null;
   rewardDeadlineAt: number | null;
@@ -142,10 +166,7 @@ export type PlayerGameView = {
   pendingRoundPlayback: RoundResolvedPayload | null;
 };
 
-export type PublicBattleEvent = Exclude<
-  BattleEvent,
-  { type: "PRIVATE_CARD_DRAWN" }
->;
+export type PublicBattleEvent = BattleEvent;
 
 export type PublicGameSnapshot = {
   roundNumber: number;
@@ -155,6 +176,9 @@ export type PublicGameSnapshot = {
     maxHp: number;
     alive: boolean;
     handCount: number;
+    drawPileCount: number;
+    discardPileCount: number;
+    totalDeckCount: number;
   }>;
   result: GameResult | null;
 };
@@ -222,8 +246,18 @@ export interface ClientToServerEvents {
       roomCode: string;
       roundNumber: number;
       cardInstanceId: string;
+      order?: 0 | 1 | 2;
       targetPlayerId?: string;
       additionalSelection?: QueuedCardAction["additionalSelection"];
+    },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "game:move-queued-card": (
+    payload: {
+      roomCode: string;
+      roundNumber: number;
+      cardInstanceId: string;
+      order: 0 | 1 | 2;
     },
     ack: SocketAckCallback<{ accepted: true }>,
   ) => void;

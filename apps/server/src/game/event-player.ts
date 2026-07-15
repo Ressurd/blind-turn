@@ -6,9 +6,7 @@ import type {
 } from "@blind-turn/shared";
 
 export function createPublicEvents(events: BattleEvent[]): PublicBattleEvent[] {
-  return events.filter(
-    (event): event is PublicBattleEvent => event.type !== "PRIVATE_CARD_DRAWN",
-  );
+  return events.map((event) => ({ ...event }));
 }
 
 export function createPublicSnapshot(state: GameState): PublicGameSnapshot {
@@ -20,6 +18,12 @@ export function createPublicSnapshot(state: GameState): PublicGameSnapshot {
       maxHp: player.maxHp,
       alive: player.alive,
       handCount: player.deckState.hand.length,
+      drawPileCount: player.deckState.drawPile.length,
+      discardPileCount: player.deckState.discardPile.length,
+      totalDeckCount:
+        player.deckState.hand.length
+        + player.deckState.drawPile.length
+        + player.deckState.discardPile.length,
     })),
     result: state.result ? { ...state.result } : null,
   };

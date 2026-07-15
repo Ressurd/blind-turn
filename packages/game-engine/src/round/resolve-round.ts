@@ -54,6 +54,36 @@ type SpecialPacket = {
   source: "COUNTER" | "SELF";
 };
 
+function appendDrawEvents(
+  events: BattleEvent[],
+  playerId: string,
+  drawn: ReturnType<typeof drawCards>,
+): void {
+  if (drawn.reshuffled) {
+    events.push(
+      {
+        type: "DISCARD_RESHUFFLE_STARTED",
+        playerId,
+        discardCount: drawn.reshuffled.discardCount,
+      },
+      {
+        type: "DISCARD_RESHUFFLED",
+        playerId,
+        drawPileCount: drawn.reshuffled.drawPileCount,
+      },
+    );
+  }
+  if (drawn.drawn.length > 0) {
+    events.push({
+      type: "CARD_DRAWN",
+      playerId,
+      count: drawn.drawn.length,
+      drawPileCount: drawn.state.drawPile.length,
+      handCount: drawn.state.hand.length,
+    });
+  }
+}
+
 function findPlayer(state: GameState, playerId: string): PlayerState {
   const player = state.players.find((candidate) => candidate.id === playerId);
   if (!player) throw new Error(`Unknown player: ${playerId}`);
@@ -100,13 +130,7 @@ function applyUtilityAction(
   if (effect.kind === "DRAW") {
     const drawn = drawCards(player.deckState, effect.draw ?? 0, randomSource);
     player.deckState = drawn.state;
-    if (drawn.drawn.length > 0) {
-      events.push({
-        type: "PRIVATE_CARD_DRAWN",
-        playerId: player.id,
-        count: drawn.drawn.length,
-      });
-    }
+    appendDrawEvents(events, player.id, drawn);
     return;
   }
   if (effect.kind === "RECYCLE") {
@@ -138,25 +162,13 @@ function applyUtilityAction(
     }
     const drawn = drawCards(player.deckState, moved, randomSource);
     player.deckState = drawn.state;
-    if (drawn.drawn.length > 0) {
-      events.push({
-        type: "PRIVATE_CARD_DRAWN",
-        playerId: player.id,
-        count: drawn.drawn.length,
-      });
-    }
+    appendDrawEvents(events, player.id, drawn);
     return;
   }
   if (effect.kind === "SIFT") {
     const drawn = drawCards(player.deckState, effect.draw ?? 2, randomSource);
     player.deckState = drawn.state;
-    if (drawn.drawn.length > 0) {
-      events.push({
-        type: "PRIVATE_CARD_DRAWN",
-        playerId: player.id,
-        count: drawn.drawn.length,
-      });
-    }
+    appendDrawEvents(events, player.id, drawn);
     const selection = action.queued.additionalSelection;
     if (!selection || !("returnCardInstanceId" in selection)) return;
     const index = player.deckState.hand.findIndex(
@@ -537,9 +549,7 @@ function resolveStep(
     const player = findPlayer(state, playerId);
     const drawn = drawCards(player.deckState, 1, randomSource);
     player.deckState = drawn.state;
-    if (drawn.drawn.length > 0) {
-      events.push({ type: "PRIVATE_CARD_DRAWN", playerId, count: 1 });
-    }
+    appendDrawEvents(events, playerId, drawn);
   }
 
   const results = state.players

@@ -48,6 +48,7 @@ export function prepareRewardOptions(
       ...randomSource.shuffle(classIds).slice(0, 2),
       ...randomSource.shuffle(commonIds).slice(0, 1),
     ];
+    player.deckState.selectedRewardCardId = null;
     player.deckState.pendingRewardCardId = null;
     player.deckState.pendingRemovalRequired = false;
   }
@@ -79,6 +80,7 @@ export function selectReward(
     throw new GameEngineError("REWARD_OPTION_NOT_FOUND");
   }
   player.deckState.pendingRewardOptions = [];
+  player.deckState.selectedRewardCardId = cardId;
   if (getDeckSize(player.deckState) < MAX_DECK_SIZE) {
     player.deckState = insertNewCard(
       player.deckState,

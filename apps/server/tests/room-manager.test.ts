@@ -151,6 +151,32 @@ describe("private round queue", () => {
     expect(JSON.stringify(opponent)).not.toContain(card.instanceId);
   });
 
+  it("provides private pile aggregates without draw order and only public counts to opponents", () => {
+    const manager = makeManager();
+    const setup = startTwoPlayerGame(manager);
+    const room = manager.getRoom(setup.roomCode)!;
+    const hostState = room.game!.getState().players.find(
+      (player) => player.id === setup.host.credentials.playerId,
+    )!;
+    hostState.deckState.drawPile[0] = {
+      instanceId: "host-secret-draw",
+      cardId: "BERSERKER_CRUSH",
+    };
+    const owner = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
+    const opponent = manager.getPlayerView(setup.roomCode, setup.guest.credentials.playerId);
+    expect(owner.myDrawPileSummary.find((summary) => summary.cardId === "BERSERKER_CRUSH")?.drawPileCount).toBe(1);
+    expect(owner.myDrawPileSummary.every((summary) => !("instanceId" in summary))).toBe(true);
+    expect(owner.myDeckSummary.reduce((sum, summary) => sum + summary.totalCount, 0)).toBe(owner.totalDeckCount);
+    expect(JSON.stringify(opponent)).not.toContain("BERSERKER_CRUSH");
+    const publicHost = opponent.players.find((player) => player.playerId === setup.host.credentials.playerId)!;
+    expect(publicHost).toMatchObject({
+      handCount: hostState.deckState.hand.length,
+      drawPileCount: hostState.deckState.drawPile.length,
+      discardPileCount: hostState.deckState.discardPile.length,
+      totalDeckCount: 8,
+    });
+  });
+
   it("emits queue changes, round lock, hidden count reveal, and one identical result payload", () => {
     const manager = makeManager();
     const events: RoomManagerEvent[] = [];
@@ -204,7 +230,18 @@ describe("private round queue", () => {
     manager.eventsFinished(setup.roomCode, setup.host.credentials.playerId, "socket-1", 3);
     manager.eventsFinished(setup.roomCode, setup.guest.credentials.playerId, "socket-2", 3);
     expect(room.phase).toBe("SELECTING_REWARD");
-    expect(manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId).rewardOptions).toHaveLength(3);
+    const rewardView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
+    expect(rewardView.rewardOptions).toHaveLength(3);
+    manager.selectReward(
+      setup.roomCode,
+      setup.host.credentials.playerId,
+      "socket-1",
+      rewardView.rewardOptions[0]!.id,
+    );
+    const selectedView = manager.getPlayerView(setup.roomCode, setup.host.credentials.playerId);
+    expect(selectedView.selectedReward?.id).toBe(rewardView.rewardOptions[0]!.id);
+    expect(selectedView.rewardOptions).toHaveLength(0);
+    expect(selectedView.rewardSelectionStatus).toEqual({ selectedPlayerCount: 1, totalPlayerCount: 2 });
     vi.advanceTimersByTime(30_000);
     expect(room.phase).toBe("SELECTING_CARDS");
     expect(room.game!.getState().roundNumber).toBe(4);
@@ -231,15 +268,18 @@ describe("reconnect, chat, and cleanup", () => {
     expectRoomError(() => manager.sendChat(setup.roomCode, setup.host.credentials.playerId, "socket-1", "third"), "CHAT_RATE_LIMITED");
   });
 
-  it("blocks dead-player chat and strips private draw events from public playback", () => {
+  it("blocks dead-player chat and exposes only draw counts in public playback", () => {
     const manager = makeManager();
     const setup = startTwoPlayerGame(manager);
     manager.getRoom(setup.roomCode)!.game!.getState().players[0]!.alive = false;
     expectRoomError(() => manager.sendChat(setup.roomCode, setup.host.credentials.playerId, "socket-1", "boo"), "CHAT_DEAD_PLAYER");
     expect(createPublicEvents([
-      { type: "PRIVATE_CARD_DRAWN", playerId: "p1", count: 1 },
+      { type: "CARD_DRAWN", playerId: "p1", count: 1, drawPileCount: 4, handCount: 3 },
       { type: "ROUND_STARTED", roundNumber: 1 },
-    ])).toEqual([{ type: "ROUND_STARTED", roundNumber: 1 }]);
+    ])).toEqual([
+      { type: "CARD_DRAWN", playerId: "p1", count: 1, drawPileCount: 4, handCount: 3 },
+      { type: "ROUND_STARTED", roundNumber: 1 },
+    ]);
   });
 
   it("transfers host and removes abandoned rooms after cleanup TTL", () => {

@@ -115,7 +115,7 @@ export function queueCard(
   state: GameState,
   playerId: string,
   roundNumber: number,
-  input: Omit<QueuedCardAction, "order">,
+  input: Omit<QueuedCardAction, "order"> & { order?: 0 | 1 | 2 },
 ): GameState {
   const next = cloneGameState(state);
   const player = requireSelectingPlayer(next, playerId, roundNumber);
@@ -148,13 +148,23 @@ export function queueCard(
   const definition = getCardDefinition(card.cardId);
   validateTarget(next, player, definition.targetType, input.targetPlayerId);
   validateAdditionalSelection(player, card.cardId, input.additionalSelection);
-  const order = player.deckState.queuedCards.length as 0 | 1 | 2;
+  const order = input.order
+    ?? ([0, 1, 2].find((candidate) =>
+      !player.deckState.queuedCards.some((queued) => queued.order === candidate)
+    ) as 0 | 1 | 2 | undefined);
+  if (
+    order === undefined
+    || player.deckState.queuedCards.some((queued) => queued.order === order)
+  ) {
+    throw new GameEngineError("INVALID_QUEUE_ORDER");
+  }
   player.deckState.queuedCards.push({
     cardInstanceId: input.cardInstanceId,
     order,
     ...(input.targetPlayerId ? { targetPlayerId: input.targetPlayerId } : {}),
     additionalSelection: input.additionalSelection ?? null,
   });
+  player.deckState.queuedCards.sort((left, right) => left.order - right.order);
   return next;
 }
 
@@ -171,9 +181,28 @@ export function removeQueuedCard(
   );
   if (index < 0) throw new GameEngineError("CARD_NOT_IN_HAND");
   player.deckState.queuedCards.splice(index, 1);
-  player.deckState.queuedCards = player.deckState.queuedCards.map(
-    (queued, order) => ({ ...queued, order: order as 0 | 1 | 2 }),
+  return next;
+}
+
+export function moveQueuedCard(
+  state: GameState,
+  playerId: string,
+  roundNumber: number,
+  cardInstanceId: string,
+  order: 0 | 1 | 2,
+): GameState {
+  const next = cloneGameState(state);
+  const player = requireSelectingPlayer(next, playerId, roundNumber);
+  const moving = player.deckState.queuedCards.find(
+    (queued) => queued.cardInstanceId === cardInstanceId,
   );
+  if (!moving) throw new GameEngineError("CARD_NOT_IN_HAND");
+  const occupied = player.deckState.queuedCards.find(
+    (queued) => queued.order === order,
+  );
+  if (occupied) occupied.order = moving.order;
+  moving.order = order;
+  player.deckState.queuedCards.sort((left, right) => left.order - right.order);
   return next;
 }
 

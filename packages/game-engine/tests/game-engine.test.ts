@@ -13,6 +13,7 @@ import {
   createGame,
   getAllDeckCards,
   getDeckSize,
+  moveQueuedCard,
   prepareRewardOptions,
   queueCard,
   removeQueuedCard,
@@ -117,6 +118,11 @@ describe("V2 catalogs and deck lifecycle", () => {
     state.phase = "ROUND_STARTING";
     state = startRound(state, new SeededRandomSource(6));
     expect(state.players[0]!.deckState.hand.some((card) => card.instanceId === "reshuffle")).toBe(true);
+    expect(state.pendingEvents.filter((event) => "playerId" in event && event.playerId === "p1").map((event) => event.type)).toEqual([
+      "DISCARD_RESHUFFLE_STARTED",
+      "DISCARD_RESHUFFLED",
+      "CARD_DRAWN",
+    ]);
   });
 
   it("lets Tactician inspect 4 opening cards and keep exactly 3", () => {
@@ -152,11 +158,34 @@ describe("private queue", () => {
       ids[2], ids[0], ids[1],
     ]);
     state = removeQueuedCard(state, "p1", state.roundNumber, ids[0]!);
-    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 1]);
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 2]);
 
     const zeroCardPlayer = confirmRound(state, "p2", state.roundNumber);
     expect(zeroCardPlayer.players[1]!.deckState.confirmed).toBe(true);
     expect(zeroCardPlayer.players[1]!.deckState.queuedCards).toEqual([]);
+  });
+
+  it("reserves an explicit stage and moves it with button-friendly slot swaps", () => {
+    let state = selectingState();
+    setHand(state, "p1", ["BASE_GUARD", "BASE_QUICK_STRIKE"]);
+    const [guard, attack] = state.players[0]!.deckState.hand;
+    state = queueCard(state, "p1", state.roundNumber, {
+      cardInstanceId: attack!.instanceId,
+      targetPlayerId: "p2",
+      order: 2,
+      additionalSelection: null,
+    });
+    state = queueCard(state, "p1", state.roundNumber, {
+      cardInstanceId: guard!.instanceId,
+      order: 0,
+      additionalSelection: null,
+    });
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => queued.order)).toEqual([0, 2]);
+    state = moveQueuedCard(state, "p1", state.roundNumber, attack!.instanceId, 0);
+    expect(state.players[0]!.deckState.queuedCards.map((queued) => [queued.cardInstanceId, queued.order])).toEqual([
+      [attack!.instanceId, 0],
+      [guard!.instanceId, 2],
+    ]);
   });
 
   it("rejects a fourth queued card and hides no random initiative fields in state", () => {

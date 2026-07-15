@@ -47,8 +47,15 @@ export const QueueCardPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
   roundNumber: z.number().int().positive(),
   cardInstanceId: z.string().min(1),
+  order: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
   targetPlayerId: z.string().min(1).optional(),
   additionalSelection: AdditionalSelectionSchema.optional(),
+});
+export const MoveQueuedCardPayloadSchema = z.object({
+  roomCode: RoomCodeSchema,
+  roundNumber: z.number().int().positive(),
+  cardInstanceId: z.string().min(1),
+  order: z.union([z.literal(0), z.literal(1), z.literal(2)]),
 });
 export const RemoveQueuedCardPayloadSchema = z.object({
   roomCode: RoomCodeSchema,

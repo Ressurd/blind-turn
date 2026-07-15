@@ -1,10 +1,13 @@
 import {
   CHARACTER_CATALOG,
+  MAX_DECK_SIZE,
   MAX_HAND_SIZE,
   MAX_HP,
   getAllDeckCards,
   getCardDefinition,
   type PlayerGameView,
+  type PlayerDeckState,
+  type PrivateDeckCardSummary,
 } from "@blind-turn/shared";
 import type { RoomState } from "../rooms/room-state";
 
@@ -12,6 +15,40 @@ const privateCard = (card: { instanceId: string; cardId: string }) => ({
   ...card,
   definition: getCardDefinition(card.cardId),
 });
+
+function summarizeDeck(state: PlayerDeckState): PrivateDeckCardSummary[] {
+  const queuedIds = new Set(
+    state.queuedCards.map((queued) => queued.cardInstanceId),
+  );
+  const summaries = new Map<string, PrivateDeckCardSummary>();
+  const add = (
+    card: { cardId: string; instanceId: string },
+    location: "handCount" | "drawPileCount" | "discardPileCount",
+  ) => {
+    const current = summaries.get(card.cardId) ?? {
+      cardId: card.cardId,
+      definition: getCardDefinition(card.cardId),
+      totalCount: 0,
+      handCount: 0,
+      drawPileCount: 0,
+      discardPileCount: 0,
+      queuedCount: 0,
+    };
+    current.totalCount += 1;
+    if (location === "handCount" && queuedIds.has(card.instanceId)) {
+      current.queuedCount += 1;
+    } else {
+      current[location] += 1;
+    }
+    summaries.set(card.cardId, current);
+  };
+  state.hand.forEach((card) => add(card, "handCount"));
+  state.drawPile.forEach((card) => add(card, "drawPileCount"));
+  state.discardPile.forEach((card) => add(card, "discardPileCount"));
+  return [...summaries.values()].sort((left, right) =>
+    left.definition.name.localeCompare(right.definition.name, "ko")
+  );
+}
 
 export function createPlayerView(
   room: RoomState,
@@ -44,6 +81,9 @@ export function createPlayerView(
         maxHp: player?.maxHp ?? characterMaxHp,
         handCount: player?.deckState.hand.length ?? 0,
         maxHandSize: MAX_HAND_SIZE,
+        drawPileCount: player?.deckState.drawPile.length ?? 0,
+        discardPileCount: player?.deckState.discardPile.length ?? 0,
+        totalDeckCount: player ? getAllDeckCards(player.deckState).length : 0,
         submitted: player?.deckState.confirmed ?? false,
         usedCardCount: room.phase === "SELECTING_CARDS"
           ? null
@@ -54,6 +94,10 @@ export function createPlayerView(
     myCharacterId: viewer.characterId,
     myHand: gamePlayer?.deckState.hand.map(privateCard) ?? [],
     myDiscardPile: gamePlayer?.deckState.discardPile.map(privateCard) ?? [],
+    myDrawPileSummary: gamePlayer
+      ? summarizeDeck(gamePlayer.deckState).filter((summary) => summary.drawPileCount > 0)
+      : [],
+    myDeckSummary: gamePlayer ? summarizeDeck(gamePlayer.deckState) : [],
     myQueuedCards: gamePlayer?.deckState.queuedCards.map((queued) => ({
       ...queued,
       additionalSelection: queued.additionalSelection
@@ -63,9 +107,24 @@ export function createPlayerView(
     myConfirmed: gamePlayer?.deckState.confirmed ?? false,
     drawPileCount: gamePlayer?.deckState.drawPile.length ?? 0,
     discardPileCount: gamePlayer?.deckState.discardPile.length ?? 0,
+    totalDeckCount: gamePlayer ? getAllDeckCards(gamePlayer.deckState).length : 0,
+    maxDeckSize: MAX_DECK_SIZE,
     initialHandOptions:
       gamePlayer?.deckState.pendingInitialHandSelection.map(privateCard) ?? [],
     rewardOptions: gamePlayer?.deckState.pendingRewardOptions.map(getCardDefinition) ?? [],
+    selectedReward:
+      gamePlayer?.deckState.selectedRewardCardId
+        ? getCardDefinition(gamePlayer.deckState.selectedRewardCardId)
+        : null,
+    rewardSelectionStatus:
+      state && (room.phase === "SELECTING_REWARD" || room.phase === "SELECTING_DECK_REMOVAL")
+        ? {
+            selectedPlayerCount: state.players.filter(
+              (player) => player.alive && player.deckState.selectedRewardCardId,
+            ).length,
+            totalPlayerCount: state.players.filter((player) => player.alive).length,
+          }
+        : null,
     deckRemovalCandidates:
       gamePlayer?.deckState.pendingRemovalRequired
         ? getAllDeckCards(gamePlayer.deckState).map(privateCard)

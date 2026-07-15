@@ -157,7 +157,10 @@ describe("Socket.IO V2 multiplayer flow", () => {
     const [first, second] = await Promise.all([hostResolved, guestResolved]);
     expect(first).toEqual(second);
     expect(first.roundNumber).toBe(1);
-    expect(JSON.stringify(first.events)).not.toContain("PRIVATE_CARD_DRAWN");
+    for (const event of first.events.filter((entry) => entry.type === "CARD_DRAWN")) {
+      expect(event).not.toHaveProperty("cardId");
+      expect(event).not.toHaveProperty("cardInstanceId");
+    }
   });
 
   it("broadcasts server-authored same-room chat without accepting identity fields", async () => {

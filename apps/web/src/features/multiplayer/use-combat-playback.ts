@@ -4,8 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   applyCombatDamage,
   applyCombatDeaths,
+  applyDeckPlaybackStage,
   hydrateCombatDamageTransitions,
   synchronizeCombatDisplayState,
+  synchronizeCombatDeckDisplayState,
+  type CombatDeckDisplayState,
   type CombatDisplayState,
   type CombatSequence,
 } from "./combat-sequence";
@@ -13,6 +16,10 @@ import {
 export type CombatPlaybackStage =
   | "idle"
   | "reveal"
+  | "reshuffle-start"
+  | "reshuffle-shuffle"
+  | "reshuffle-complete"
+  | "draw"
   | "roll"
   | "impact"
   | "damage"
@@ -33,6 +40,8 @@ export type CombatPlaybackBatch = {
   sequences: CombatSequence[];
   initialState: CombatDisplayState;
   serverState: CombatDisplayState;
+  initialDeckState: CombatDeckDisplayState;
+  serverDeckState: CombatDeckDisplayState;
 };
 
 export type CompletedCombatSequence = {
@@ -40,10 +49,34 @@ export type CompletedCombatSequence = {
   sequence: CombatSequence;
 };
 
-type PlaybackStep = {
+export type PlaybackStep = {
   stage: Exclude<CombatPlaybackStage, "idle">;
   durationMs: number;
 };
+
+export const COMBAT_PLAYBACK_TIMINGS = {
+  roundStart: 1_000,
+  cardRevealBase: 1_000,
+  cardRevealEach: 700,
+  reshuffleStart: 800,
+  reshuffleShuffle: 900,
+  reshuffleComplete: 500,
+  draw: 700,
+  normalRoll: 1_800,
+  clashRoll: 2_800,
+  attackMove: 500,
+  damage: 800,
+  death: 700,
+  sequenceGap: 600,
+  roundSummary: 1_500,
+} as const;
+
+export function scalePlaybackDuration(
+  durationMs: number,
+  speed: CombatPlaybackSpeed,
+): number {
+  return Math.max(90, durationMs / speed);
+}
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
@@ -72,32 +105,55 @@ export function createPlaybackTimer(
 
 export function getCombatPlaybackSteps(sequence: CombatSequence): PlaybackStep[] {
   if (sequence.type === "ROUND") {
-    return [{ stage: "reveal", durationMs: 450 }];
+    return [{ stage: "reveal", durationMs: COMBAT_PLAYBACK_TIMINGS.roundStart }];
+  }
+  if (sequence.type === "ROUND_SUMMARY") {
+    return [{ stage: "result", durationMs: COMBAT_PLAYBACK_TIMINGS.roundSummary }];
   }
   if (sequence.type === "GAME_OVER") {
     return [
-      { stage: "reveal", durationMs: 450 },
-      { stage: "result", durationMs: 700 },
+      { stage: "reveal", durationMs: COMBAT_PLAYBACK_TIMINGS.roundStart },
+      { stage: "result", durationMs: COMBAT_PLAYBACK_TIMINGS.roundSummary },
     ];
   }
-  const steps: PlaybackStep[] = [{ stage: "reveal", durationMs: 500 }];
+  const steps: PlaybackStep[] = [{
+    stage: "reveal",
+    durationMs:
+      COMBAT_PLAYBACK_TIMINGS.cardRevealBase
+      + sequence.cards.length * COMBAT_PLAYBACK_TIMINGS.cardRevealEach,
+  }];
+  if (sequence.reshuffles.length > 0) {
+    steps.push(
+      { stage: "reshuffle-start", durationMs: COMBAT_PLAYBACK_TIMINGS.reshuffleStart },
+      { stage: "reshuffle-shuffle", durationMs: COMBAT_PLAYBACK_TIMINGS.reshuffleShuffle },
+      { stage: "reshuffle-complete", durationMs: COMBAT_PLAYBACK_TIMINGS.reshuffleComplete },
+    );
+  }
+  if (sequence.draws.length > 0) {
+    steps.push({ stage: "draw", durationMs: COMBAT_PLAYBACK_TIMINGS.draw });
+  }
   if (sequence.rolls.length > 0 || sequence.outcome === "COUNTER") {
-    steps.push({ stage: "roll", durationMs: 700 });
+    steps.push({
+      stage: "roll",
+      durationMs: sequence.outcome === "CLASH"
+        ? COMBAT_PLAYBACK_TIMINGS.clashRoll
+        : COMBAT_PLAYBACK_TIMINGS.normalRoll,
+    });
   }
   if (
     sequence.damages.length > 0
     || sequence.outcome === "EVADE_SUCCESS"
     || sequence.outcome === "EVADE_FAILURE"
   ) {
-    steps.push({ stage: "impact", durationMs: 300 });
+    steps.push({ stage: "impact", durationMs: COMBAT_PLAYBACK_TIMINGS.attackMove });
   }
   if (sequence.damages.length > 0 || sequence.heals.length > 0) {
-    steps.push({ stage: "damage", durationMs: 500 });
+    steps.push({ stage: "damage", durationMs: COMBAT_PLAYBACK_TIMINGS.damage });
   }
   if (sequence.deathPlayerIds.length > 0) {
-    steps.push({ stage: "death", durationMs: 700 });
+    steps.push({ stage: "death", durationMs: COMBAT_PLAYBACK_TIMINGS.death });
   }
-  steps.push({ stage: "result", durationMs: 400 });
+  steps.push({ stage: "result", durationMs: COMBAT_PLAYBACK_TIMINGS.sequenceGap });
   return steps;
 }
 
@@ -127,6 +183,7 @@ export function useCombatPlayback(options: {
   const [currentStage, setCurrentStage] = useState<CombatPlaybackStage>("idle");
   const [currentRoundNumber, setCurrentRoundNumber] = useState<number | null>(null);
   const [displayState, setDisplayStateState] = useState<CombatDisplayState>({});
+  const [displayDeckState, setDisplayDeckStateState] = useState<CombatDeckDisplayState>({});
   const [completedSequences, setCompletedSequences] = useState<CompletedCombatSequence[]>([]);
   const [statuses, setStatuses] = useState<CombatStatusState>({
     defending: [],
@@ -145,6 +202,7 @@ export function useCombatPlayback(options: {
   const stepsRef = useRef<PlaybackStep[]>([]);
   const currentSequenceRef = useRef<CombatSequence | null>(null);
   const displayStateRef = useRef<CombatDisplayState>({});
+  const displayDeckStateRef = useRef<CombatDeckDisplayState>({});
   const isPlayingRef = useRef(false);
   const pausedRef = useRef(false);
   const speedRef = useRef<CombatPlaybackSpeed>(1);
@@ -162,12 +220,17 @@ export function useCombatPlayback(options: {
     setDisplayStateState(state);
   }
 
+  function setDisplayDeckState(state: CombatDeckDisplayState): void {
+    displayDeckStateRef.current = state;
+    setDisplayDeckStateState(state);
+  }
+
   function scheduleCurrentStep(): void {
     const step = stepsRef.current[stepIndexRef.current];
     if (!step || pausedRef.current) return;
     timerRef.current.schedule(
       () => advanceStepRef.current(),
-      Math.max(90, step.durationMs / speedRef.current),
+      scalePlaybackDuration(step.durationMs, speedRef.current),
     );
   }
 
@@ -181,6 +244,11 @@ export function useCombatPlayback(options: {
     }
     if (step.stage === "death") {
       setDisplayState(applyCombatDeaths(displayStateRef.current, sequence));
+    }
+    if (step.stage === "reshuffle-start" || step.stage === "reshuffle-complete" || step.stage === "draw") {
+      setDisplayDeckState(
+        applyDeckPlaybackStage(displayDeckStateRef.current, sequence, step.stage),
+      );
     }
     scheduleCurrentStep();
   };
@@ -204,6 +272,7 @@ export function useCombatPlayback(options: {
       return;
     }
     setDisplayState(synchronizeCombatDisplayState(batch.serverState));
+    setDisplayDeckState(synchronizeCombatDeckDisplayState(batch.serverDeckState));
     onRoundCompleteRef.current(batch.roundNumber);
     currentBatchRef.current = null;
     startNextBatchRef.current();
@@ -215,6 +284,7 @@ export function useCombatPlayback(options: {
     if (!batch || !sequence) {
       if (batch) {
         setDisplayState(synchronizeCombatDisplayState(batch.serverState));
+        setDisplayDeckState(synchronizeCombatDeckDisplayState(batch.serverDeckState));
         onRoundCompleteRef.current(batch.roundNumber);
       }
       currentBatchRef.current = null;
@@ -252,6 +322,7 @@ export function useCombatPlayback(options: {
     sequenceIndexRef.current = 0;
     setCurrentRoundNumber(batch.roundNumber);
     setDisplayState(synchronizeCombatDisplayState(batch.initialState));
+    setDisplayDeckState(synchronizeCombatDeckDisplayState(batch.initialDeckState));
     startSequenceRef.current();
   };
 
@@ -267,9 +338,15 @@ export function useCombatPlayback(options: {
     return true;
   }, []);
 
-  const syncServerState = useCallback((state: CombatDisplayState): void => {
+  const syncServerState = useCallback((
+    state: CombatDisplayState,
+    deckState?: CombatDeckDisplayState,
+  ): void => {
     if (!isPlayingRef.current && queueRef.current.length === 0) {
       setDisplayState(synchronizeCombatDisplayState(state));
+      if (deckState) {
+        setDisplayDeckState(synchronizeCombatDeckDisplayState(deckState));
+      }
     }
   }, []);
 
@@ -307,6 +384,7 @@ export function useCombatPlayback(options: {
     }
     setCompletedSequences((current) => [...current, ...records]);
     setDisplayState(synchronizeCombatDisplayState(batches.at(-1)!.serverState));
+    setDisplayDeckState(synchronizeCombatDeckDisplayState(batches.at(-1)!.serverDeckState));
     queueRef.current = [];
     currentBatchRef.current = null;
     currentSequenceRef.current = null;
@@ -320,7 +398,10 @@ export function useCombatPlayback(options: {
     setIsPaused(false);
   }, []);
 
-  const reset = useCallback((state: CombatDisplayState = {}) => {
+  const reset = useCallback((
+    state: CombatDisplayState = {},
+    deckState: CombatDeckDisplayState = {},
+  ) => {
     timerRef.current.dispose();
     queueRef.current = [];
     currentBatchRef.current = null;
@@ -334,6 +415,7 @@ export function useCombatPlayback(options: {
     setCurrentStage("idle");
     setCurrentRoundNumber(null);
     setDisplayState(synchronizeCombatDisplayState(state));
+    setDisplayDeckState(synchronizeCombatDeckDisplayState(deckState));
     setCompletedSequences([]);
     setStatuses({ defending: [], evading: [], countering: [] });
     setIsPlaying(false);
@@ -352,6 +434,7 @@ export function useCombatPlayback(options: {
     currentStage,
     currentRoundNumber,
     displayState,
+    displayDeckState,
     completedSequences,
     statuses,
     isPlaying,
