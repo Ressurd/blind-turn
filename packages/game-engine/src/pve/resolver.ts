@@ -5,10 +5,17 @@ import {
   PVE_CHARACTER_ORDER,
   selectPveTrackingTarget,
 } from "./fixtures";
+import {
+  buildPveResolvedActionTimeline,
+  getPvePlannedActionOrder,
+} from "./action-order";
+import { getPveAttackGeometry } from "./attack-range";
 import type {
   PveActionDefinition,
+  PveActionOrderEntry,
   PveBattleState,
   PveBeat,
+  PveBossPlan,
   PveCharacterId,
   PveCombatEvent,
   PveCombatEventType,
@@ -23,9 +30,13 @@ type EventInput = {
   type: PveCombatEventType;
   phase: PveResolutionPhase;
   message: string;
+  timelineEntryId?: string;
+  actionName?: string;
+  skipReason?: string;
   actorId?: PveCharacterId | "BOSS" | "SYSTEM";
   targetCharacterId?: PveCharacterId;
   actionId?: PveCombatEvent["actionId"];
+  targetEnemyId?: PveCombatEvent["targetEnemyId"];
   damageType?: PveCombatEvent["damageType"];
   amount?: number;
   rawAmount?: number;
@@ -33,6 +44,9 @@ type EventInput = {
   shieldAbsorbed?: number;
   from?: PvePosition;
   to?: PvePosition;
+  selectedCenter?: PvePosition;
+  effectArea?: PvePosition[];
+  hitEnemyIds?: PveCombatEvent["hitEnemyIds"];
 };
 
 type BeatContext = {
@@ -50,7 +64,10 @@ function clonePveBattleState(state: PveBattleState): PveBattleState {
       MAGE: { ...state.characters.MAGE, position: { ...state.characters.MAGE.position } },
       PRIEST: { ...state.characters.PRIEST, position: { ...state.characters.PRIEST.position } },
     },
-    boss: { ...state.boss },
+    boss: {
+      ...state.boss,
+      occupiedTiles: state.boss.occupiedTiles.map((position) => ({ ...position })),
+    },
     result: state.result,
   };
 }
@@ -72,9 +89,16 @@ function resolveBeatInternal(
   beat: PveBeat,
   trackingTargetId: PveCharacterId,
   eventOffset: number,
-): { state: PveBattleState; events: PveCombatEvent[] } {
+  bossPlan: PveBossPlan,
+): {
+  state: PveBattleState;
+  events: PveCombatEvent[];
+  actionOrder: PveActionOrderEntry[];
+} {
   const state = clonePveBattleState(input);
   const events: PveCombatEvent[] = [];
+  const actionOrder = getPvePlannedActionOrder(plans, beat, bossPlan);
+  let activeTimelineEntryId: string | null = null;
   const context: BeatContext = {
     trackingTargetId,
     taunting: false,
@@ -83,33 +107,69 @@ function resolveBeatInternal(
   };
 
   const emit = (event: EventInput): void => {
+    const timelineEntryId = event.timelineEntryId ?? activeTimelineEntryId;
     events.push({
       id: `beat-${beat}-event-${eventOffset + events.length + 1}`,
       beat,
       ...event,
+      ...(timelineEntryId ? { timelineEntryId } : {}),
       state: clonePveBattleState(state),
     });
   };
 
   const actionFor = (characterId: PveCharacterId) => plans[characterId][beat - 1]!;
+  const skipAction = (entry: PveActionOrderEntry, reason: string): void => {
+    emit({
+      type: "ACTION_FAILED",
+      phase: entry.phase,
+      actorId: entry.actorId,
+      ...(entry.actionId ? { actionId: entry.actionId } : {}),
+      actionName: entry.actionName,
+      timelineEntryId: entry.id,
+      skipReason: reason,
+      message: reason,
+    });
+  };
   const runAction = (
-    characterId: PveCharacterId,
-    phase: PveResolutionPhase,
+    entry: PveActionOrderEntry,
     callback: (definition: PveActionDefinition) => void,
   ): void => {
+    if (entry.actorId === "BOSS" || !entry.actionId) return;
+    const characterId = entry.actorId;
     const character = state.characters[characterId];
-    if (!character.alive) return;
     const action = actionFor(characterId);
     const definition = PVE_ACTIONS[action.actionId];
-    if (definition.phase !== phase || definition.id === "PASS") return;
-    emit({
-      type: "ACTION_STARTED",
-      phase,
-      actorId: characterId,
-      actionId: definition.id,
-      message: `${character.name}: ${definition.name}`,
-    });
-    callback(definition);
+    if (!character.alive) {
+      skipAction(entry, `${character.name}은(는) 쓰러져 행동할 수 없습니다.`);
+      return;
+    }
+    const selectedCenter = action.target?.type === "TILE"
+      ? action.target.position
+      : undefined;
+    const attackGeometry = definition.attackPattern
+      ? getPveAttackGeometry(state, characterId, definition.id, selectedCenter)
+      : null;
+    activeTimelineEntryId = entry.id;
+    try {
+      emit({
+        type: "ACTION_STARTED",
+        phase: entry.phase,
+        actorId: characterId,
+        actionId: definition.id,
+        actionName: entry.actionName,
+        ...(selectedCenter ? { selectedCenter } : {}),
+        ...(attackGeometry
+          ? {
+            effectArea: attackGeometry.effectArea,
+            hitEnemyIds: attackGeometry.hitEnemyIds,
+          }
+          : {}),
+        message: `${character.name}: ${entry.actionName}`,
+      });
+      callback(definition);
+    } finally {
+      activeTimelineEntryId = null;
+    }
   };
 
   emit({
@@ -119,23 +179,30 @@ function resolveBeatInternal(
     message: `${beat} 비트 시작`,
   });
 
-  for (const characterId of PVE_CHARACTER_ORDER) {
-    const character = state.characters[characterId];
-    if (!character.alive) continue;
-    const action = actionFor(characterId);
-    if (action.actionId === "PASS") {
+  for (const entry of actionOrder.filter((item) => item.segment === "PASS")) {
+    if (entry.actorId === "BOSS") continue;
+    const character = state.characters[entry.actorId];
+    if (!character.alive) {
+      skipAction(entry, `${character.name}은(는) 쓰러져 PASS할 수 없습니다.`);
+    } else {
       emit({
         type: "ACTION_PASSED",
         phase: "PREPARE",
-        actorId: characterId,
+        actorId: entry.actorId,
         actionId: "PASS",
+        actionName: entry.actionName,
+        timelineEntryId: entry.id,
         message: `${character.name}: PASS`,
       });
     }
   }
 
-  for (const characterId of PVE_CHARACTER_ORDER) {
-    runAction(characterId, "PREPARE", (definition) => {
+  for (const entry of actionOrder.filter((item) =>
+    item.phase === "PREPARE" && item.segment === "PRIMARY"
+  )) {
+    runAction(entry, (definition) => {
+      if (entry.actorId === "BOSS") return;
+      const characterId = entry.actorId;
       const action = actionFor(characterId);
       if (definition.id === "WARRIOR_TAUNT") {
         context.taunting = true;
@@ -208,8 +275,12 @@ function resolveBeatInternal(
     });
   }
 
-  for (const characterId of PVE_CHARACTER_ORDER) {
-    runAction(characterId, "MOVE", (definition) => {
+  for (const entry of actionOrder.filter((item) =>
+    item.phase === "MOVE" && item.segment === "PRIMARY"
+  )) {
+    runAction(entry, (definition) => {
+      if (entry.actorId === "BOSS") return;
+      const characterId = entry.actorId;
       const character = state.characters[characterId];
       const action = actionFor(characterId);
       let destination: PvePosition | null = null;
@@ -266,8 +337,12 @@ function resolveBeatInternal(
     });
   }
 
-  for (const characterId of PVE_CHARACTER_ORDER) {
-    runAction(characterId, "SUPPORT", (definition) => {
+  for (const entry of actionOrder.filter((item) =>
+    item.phase === "SUPPORT" && item.segment === "PRIMARY"
+  )) {
+    runAction(entry, (definition) => {
+      if (entry.actorId === "BOSS") return;
+      const characterId = entry.actorId;
       const action = actionFor(characterId);
       if (definition.id === "ARCHER_MARK") {
         state.boss.marked = true;
@@ -321,10 +396,33 @@ function resolveBeatInternal(
     });
   }
 
-  const damageBoss = (
+  const resolveAttack = (
     characterId: PveCharacterId,
     definition: PveActionDefinition,
   ): void => {
+    const action = actionFor(characterId);
+    const selectedCenter = action.target?.type === "TILE"
+      ? action.target.position
+      : undefined;
+    const geometry = getPveAttackGeometry(
+      state,
+      characterId,
+      definition.id,
+      selectedCenter,
+    );
+    if (!geometry.hitEnemyIds.includes(state.boss.id)) {
+      emit({
+        type: "ATTACK_MISSED",
+        phase: "ATTACK",
+        actorId: characterId,
+        actionId: definition.id,
+        ...(selectedCenter ? { selectedCenter } : {}),
+        effectArea: geometry.effectArea,
+        hitEnemyIds: geometry.hitEnemyIds,
+        message: `${state.characters[characterId].name}의 ${definition.name} 범위에 적이 없어 빗나갔습니다.`,
+      });
+      return;
+    }
     const baseDamage = definition.value ?? 0;
     const amount = Math.round(baseDamage * (state.boss.marked ? 1.25 : 1));
     state.boss.hp = Math.max(0, state.boss.hp - amount);
@@ -333,9 +431,13 @@ function resolveBeatInternal(
       phase: "ATTACK",
       actorId: characterId,
       actionId: definition.id,
+      targetEnemyId: state.boss.id,
       damageType: definition.damageType,
       amount,
       rawAmount: baseDamage,
+      ...(selectedCenter ? { selectedCenter } : {}),
+      effectArea: geometry.effectArea,
+      hitEnemyIds: geometry.hitEnemyIds,
       message: `${state.characters[characterId].name}가 보스에게 ${amount} 피해를 주었습니다.`,
     });
     if (state.boss.hp === 0) {
@@ -349,36 +451,58 @@ function resolveBeatInternal(
     }
   };
 
-  for (const characterId of PVE_CHARACTER_ORDER) {
-    if (state.result !== "IN_PROGRESS") break;
-    runAction(characterId, "ATTACK", (definition) => {
-      damageBoss(characterId, definition);
-    });
-    if (
-      characterId === "ARCHER"
-      && actionFor(characterId).actionId === "ARCHER_RETREAT_SHOT"
-      && state.characters.ARCHER.alive
-    ) {
+  for (const entry of actionOrder.filter((item) =>
+    item.phase === "ATTACK" && item.actorType === "CHARACTER"
+  )) {
+    if (state.result !== "IN_PROGRESS") {
+      skipAction(entry, "전투가 종료되어 행동이 취소되었습니다.");
+      continue;
+    }
+    if (entry.segment === "RETREAT_ATTACK") {
+      if (!state.characters.ARCHER.alive) {
+        skipAction(entry, "궁수는 쓰러져 후퇴 사격을 이어갈 수 없습니다.");
+        continue;
+      }
       const definition = PVE_ACTIONS.ARCHER_RETREAT_SHOT;
-      emit({
-        type: "ACTION_STARTED",
-        phase: "ATTACK",
-        actorId: "ARCHER",
-        actionId: definition.id,
-        message: `궁수: ${definition.name} 공격`,
-      });
-      if (context.retreatSucceeded) {
-        damageBoss("ARCHER", definition);
-      } else {
+      const geometry = getPveAttackGeometry(
+        state,
+        "ARCHER",
+        definition.id,
+      );
+      activeTimelineEntryId = entry.id;
+      try {
         emit({
-          type: "ACTION_FAILED",
+          type: "ACTION_STARTED",
           phase: "ATTACK",
           actorId: "ARCHER",
           actionId: definition.id,
-          message: "후퇴 이동에 실패해 사격도 실행하지 못했습니다.",
+          actionName: entry.actionName,
+          effectArea: geometry.effectArea,
+          hitEnemyIds: geometry.hitEnemyIds,
+          message: `궁수: ${entry.actionName}`,
         });
+        if (context.retreatSucceeded) {
+          resolveAttack("ARCHER", definition);
+        } else {
+          const reason = "후퇴 이동이 실패해 사격을 실행하지 못했습니다.";
+          emit({
+            type: "ACTION_FAILED",
+            phase: "ATTACK",
+            actorId: "ARCHER",
+            actionId: definition.id,
+            actionName: entry.actionName,
+            skipReason: reason,
+            message: reason,
+          });
+        }
+      } finally {
+        activeTimelineEntryId = null;
       }
+      continue;
     }
+    runAction(entry, (definition) => {
+      if (entry.actorId !== "BOSS") resolveAttack(entry.actorId, definition);
+    });
   }
 
   const damageCharacter = (targetId: PveCharacterId, rawDamage: number): void => {
@@ -403,66 +527,99 @@ function resolveBeatInternal(
     });
   };
 
+  const bossEntry = actionOrder.find((entry) => entry.actorType === "BOSS")!;
   if (state.result === "IN_PROGRESS") {
-    const intent = PVE_BOSS_INTENTS[beat - 1]!;
-    emit({
-      type: "BOSS_ACTION_STARTED",
-      phase: "BOSS",
-      actorId: "BOSS",
-      message: `보스: ${intent.name}`,
-    });
-    if (intent.id === "COLUMN_SMASH") {
+    const intent = bossPlan[beat - 1]!;
+    activeTimelineEntryId = bossEntry.id;
+    try {
+      emit({
+        type: "BOSS_ACTION_STARTED",
+        phase: "BOSS",
+        actorId: "BOSS",
+        actionName: bossEntry.actionName,
+        message: `보스: ${intent.name}`,
+      });
+      if (intent.id === "COLUMN_SMASH") {
+        for (const targetId of PVE_CHARACTER_ORDER) {
+          const target = state.characters[targetId];
+          if (target.alive && target.position.x === 4) {
+            damageCharacter(targetId, intent.damage);
+          }
+        }
+      } else if (intent.id === "UPPER_COLLAPSE" || intent.id === "CENTER_CRUSH") {
+        const targetedRows = intent.id === "UPPER_COLLAPSE" ? [0, 1] : [1, 2];
+        for (const targetId of PVE_CHARACTER_ORDER) {
+          const target = state.characters[targetId];
+          if (target.alive && targetedRows.includes(target.position.y)) {
+            damageCharacter(targetId, intent.damage);
+          }
+        }
+      } else if (
+        intent.id === "TRACKING_BOLT"
+        || intent.id === "MELEE_SMASH"
+        || intent.id === "WEAKNESS_TRACKING"
+      ) {
+        const targetId = context.taunting && state.characters.WARRIOR.alive
+          ? "WARRIOR"
+          : intent.targetCharacterIds?.[0] ?? context.trackingTargetId;
+        const target = state.characters[targetId];
+        if (target.alive) {
+          damageCharacter(targetId, intent.damage);
+        } else {
+          const reason = "추적 마력탄의 예고 대상이 이미 사망해 공격이 취소되었습니다.";
+          emit({
+            type: "ACTION_FAILED",
+            phase: "BOSS",
+            actorId: "BOSS",
+            actionName: bossEntry.actionName,
+            skipReason: reason,
+            message: reason,
+          });
+        }
+      } else if (intent.id === "FRACTURE_EXPLOSION") {
+        for (const targetId of PVE_CHARACTER_ORDER) {
+          const target = state.characters[targetId];
+          if (target.alive && intent.targetTiles?.some((tile) =>
+            tile.x === target.position.x && tile.y === target.position.y
+          )) {
+            damageCharacter(targetId, intent.damage);
+          }
+        }
+      } else {
+        for (const targetId of PVE_CHARACTER_ORDER) {
+          if (state.characters[targetId].alive) {
+            damageCharacter(targetId, intent.damage);
+          }
+        }
+      }
+
       for (const targetId of PVE_CHARACTER_ORDER) {
         const target = state.characters[targetId];
-        if (target.alive && target.position.x === 4) {
-          damageCharacter(targetId, intent.damage);
+        if (target.alive && target.hp <= 0) {
+          target.alive = false;
+          emit({
+            type: "CHARACTER_DIED",
+            phase: "STATUS",
+            actorId: "SYSTEM",
+            targetCharacterId: targetId,
+            message: `${target.name}가 쓰러졌습니다.`,
+          });
         }
       }
-    } else if (intent.id === "TRACKING_BOLT") {
-      const targetId = context.taunting && state.characters.WARRIOR.alive
-        ? "WARRIOR"
-        : context.trackingTargetId;
-      const target = state.characters[targetId];
-      if (target.alive) {
-        damageCharacter(targetId, intent.damage);
-      } else {
+      if (PVE_CHARACTER_ORDER.every((id) => !state.characters[id].alive)) {
+        state.result = "DEFEAT";
         emit({
-          type: "ACTION_FAILED",
-          phase: "BOSS",
-          actorId: "BOSS",
-          message: "추적 마력탄의 예고 대상이 이미 사망해 공격이 소멸했습니다.",
-        });
-      }
-    } else {
-      for (const targetId of PVE_CHARACTER_ORDER) {
-        if (state.characters[targetId].alive) {
-          damageCharacter(targetId, intent.damage);
-        }
-      }
-    }
-
-    for (const targetId of PVE_CHARACTER_ORDER) {
-      const target = state.characters[targetId];
-      if (target.alive && target.hp <= 0) {
-        target.alive = false;
-        emit({
-          type: "CHARACTER_DIED",
+          type: "PARTY_DEFEATED",
           phase: "STATUS",
           actorId: "SYSTEM",
-          targetCharacterId: targetId,
-          message: `${target.name}가 쓰러졌습니다.`,
+          message: "파티가 전멸했습니다.",
         });
       }
+    } finally {
+      activeTimelineEntryId = null;
     }
-    if (PVE_CHARACTER_ORDER.every((id) => !state.characters[id].alive)) {
-      state.result = "DEFEAT";
-      emit({
-        type: "PARTY_DEFEATED",
-        phase: "STATUS",
-        actorId: "SYSTEM",
-        message: "파티가 전멸했습니다.",
-      });
-    }
+  } else {
+    skipAction(bossEntry, "보스가 쓰러져 이번 보스 행동은 취소되었습니다.");
   }
 
   emit({
@@ -471,7 +628,7 @@ function resolveBeatInternal(
     actorId: "SYSTEM",
     message: `${beat} 비트 종료`,
   });
-  return { state, events };
+  return { state, events, actionOrder };
 }
 
 export function resolvePveBeat(
@@ -479,16 +636,19 @@ export function resolvePveBeat(
   plans: PvePlans,
   beat: PveBeat,
   trackingTargetId = selectPveTrackingTarget(state),
+  bossPlan: PveBossPlan = PVE_BOSS_INTENTS,
 ): { state: PveBattleState; events: PveCombatEvent[] } {
   if (!isPvePlanComplete(plans)) {
     throw new Error("PVE_PLAN_INCOMPLETE");
   }
-  return resolveBeatInternal(state, plans, beat, trackingTargetId, 0);
+  const result = resolveBeatInternal(state, plans, beat, trackingTargetId, 0, bossPlan);
+  return { state: result.state, events: result.events };
 }
 
 export function resolvePveTurn(
   input: PveBattleState,
   plans: PvePlans,
+  bossPlan: PveBossPlan = PVE_BOSS_INTENTS,
 ): PveTurnResolution {
   if (!isPvePlanComplete(plans)) {
     throw new Error("PVE_PLAN_INCOMPLETE");
@@ -498,6 +658,7 @@ export function resolvePveTurn(
   state.result = "IN_PROGRESS";
   const trackingTargetId = selectPveTrackingTarget(state);
   const events: PveCombatEvent[] = [];
+  const actionOrder: PveActionOrderEntry[] = [];
   for (const beat of [1, 2, 3] as const) {
     const result = resolveBeatInternal(
       state,
@@ -505,9 +666,11 @@ export function resolvePveTurn(
       beat,
       trackingTargetId,
       events.length,
+      bossPlan,
     );
     state = result.state;
     events.push(...result.events);
+    actionOrder.push(...result.actionOrder);
     if (state.result !== "IN_PROGRESS") break;
   }
   state.boss.marked = false;
@@ -525,5 +688,6 @@ export function resolvePveTurn(
         : "전투 패배",
     state: clonePveBattleState(state),
   });
-  return { state, events, trackingTargetId };
+  const timeline = buildPveResolvedActionTimeline(events, actionOrder);
+  return { state, events, timeline, trackingTargetId };
 }

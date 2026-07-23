@@ -17,9 +17,11 @@ export function bindSocketSession(
   socket: GameSocket,
   roomCode: string,
   playerId: string,
+  roomMode: "PVP" | "PVE_COOP" = "PVP",
 ): void {
   socket.data.roomCode = roomCode;
   socket.data.playerId = playerId;
+  socket.data.roomMode = roomMode;
 }
 
 export function requireSocketSession(
@@ -38,4 +40,5 @@ export function requireSocketSession(
 export function clearSocketSession(socket: GameSocket): void {
   delete socket.data.roomCode;
   delete socket.data.playerId;
+  delete socket.data.roomMode;
 }

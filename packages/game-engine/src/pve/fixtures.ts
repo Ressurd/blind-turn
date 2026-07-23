@@ -2,7 +2,7 @@ import type {
   PveActionDefinition,
   PveActionId,
   PveBattleState,
-  PveBossIntent,
+  PveBossPlan,
   PveCharacterId,
   PvePlans,
 } from "./types";
@@ -17,7 +17,7 @@ export const PVE_CHARACTER_ORDER: readonly PveCharacterId[] = [
   "PRIEST",
 ];
 
-export const PVE_BOSS_INTENTS: readonly PveBossIntent[] = [
+export const PVE_BOSS_INTENTS: PveBossPlan = [
   {
     beat: 1,
     id: "COLUMN_SMASH",
@@ -44,6 +44,106 @@ export const PVE_BOSS_INTENTS: readonly PveBossIntent[] = [
   },
 ];
 
+function livingCharacters(state: PveBattleState) {
+  return PVE_CHARACTER_ORDER
+    .map((id) => state.characters[id])
+    .filter((character) => character.alive);
+}
+
+function farthestFromBoss(state: PveBattleState): PveCharacterId {
+  return livingCharacters(state)
+    .sort((left, right) => left.position.x - right.position.x)[0]!.id;
+}
+
+function nearestToBoss(state: PveBattleState): PveCharacterId {
+  return livingCharacters(state)
+    .sort((left, right) => right.position.x - left.position.x)[0]!.id;
+}
+
+function lowestHpRatio(state: PveBattleState): PveCharacterId {
+  return livingCharacters(state)
+    .sort((left, right) => left.hp / left.maxHp - right.hp / right.maxHp)[0]!.id;
+}
+
+export function createPveBossPlan(
+  turnNumber: number,
+  state: PveBattleState,
+): PveBossPlan {
+  if (!Number.isInteger(turnNumber) || turnNumber < 1) {
+    throw new Error("PVE_TURN_NUMBER_INVALID");
+  }
+  const pattern = (turnNumber - 1) % 3;
+  if (pattern === 0) {
+    const target = farthestFromBoss(state);
+    return [
+      { ...PVE_BOSS_INTENTS[0] },
+      { ...PVE_BOSS_INTENTS[1], targetCharacterIds: [target] },
+      { ...PVE_BOSS_INTENTS[2] },
+    ];
+  }
+  if (pattern === 1) {
+    const nearest = nearestToBoss(state);
+    const fractureTargets = livingCharacters(state).slice(0, 2);
+    return [
+      {
+        beat: 1,
+        id: "UPPER_COLLAPSE",
+        name: "상단 붕괴",
+        description: "y=0, y=1의 모든 캐릭터에게 고정 피해 5 · 도발 불가",
+        damage: 5,
+        tauntable: false,
+      },
+      {
+        beat: 2,
+        id: "MELEE_SMASH",
+        name: "근접 강타",
+        description: "가장 가까운 예고 대상에게 고정 피해 7 · 도발 가능",
+        damage: 7,
+        tauntable: true,
+        targetCharacterIds: [nearest],
+      },
+      {
+        beat: 3,
+        id: "FRACTURE_EXPLOSION",
+        name: "균열 폭발",
+        description: "예고된 두 타일에 남은 캐릭터에게 고정 피해 6 · 도발 불가",
+        damage: 6,
+        tauntable: false,
+        targetCharacterIds: fractureTargets.map((character) => character.id),
+        targetTiles: fractureTargets.map((character) => ({ ...character.position })),
+      },
+    ];
+  }
+  const weakest = lowestHpRatio(state);
+  return [
+    {
+      beat: 1,
+      id: "CENTER_CRUSH",
+      name: "중앙 압살",
+      description: "y=1, y=2의 모든 캐릭터에게 고정 피해 5 · 도발 불가",
+      damage: 5,
+      tauntable: false,
+    },
+    {
+      beat: 2,
+      id: "WEAKNESS_TRACKING",
+      name: "약자 추적",
+      description: "HP 비율이 가장 낮은 예고 대상에게 고정 피해 7 · 도발 가능",
+      damage: 7,
+      tauntable: true,
+      targetCharacterIds: [weakest],
+    },
+    {
+      beat: 3,
+      id: "HEAVY_EARTH_QUAKE",
+      name: "강한 대지 진동",
+      description: "생존한 모든 아군에게 고정 피해 6 · 도발 불가",
+      damage: 6,
+      tauntable: false,
+    },
+  ];
+}
+
 export const PVE_ACTIONS: Record<PveActionId, PveActionDefinition> = {
   PASS: {
     id: "PASS",
@@ -66,11 +166,23 @@ export const PVE_ACTIONS: Record<PveActionId, PveActionDefinition> = {
     id: "WARRIOR_SLASH",
     owner: "WARRIOR",
     name: "베기",
-    description: "보스에게 물리 고정 피해 5를 줍니다.",
+    description: "실행 위치 바로 오른쪽 1칸을 베어 물리 고정 피해 5를 줍니다.",
     targetType: "NONE",
     phase: "ATTACK",
     value: 5,
     damageType: "PHYSICAL",
+    attackPattern: "RIGHT_ONE",
+  },
+  WARRIOR_SWEEP: {
+    id: "WARRIOR_SWEEP",
+    owner: "WARRIOR",
+    name: "휩쓸기",
+    description: "오른쪽 칸과 그 위아래를 휩쓸어 물리 고정 피해 3을 줍니다.",
+    targetType: "NONE",
+    phase: "ATTACK",
+    value: 3,
+    damageType: "PHYSICAL",
+    attackPattern: "RIGHT_SWEEP",
   },
   WARRIOR_TAUNT: {
     id: "WARRIOR_TAUNT",
@@ -101,11 +213,24 @@ export const PVE_ACTIONS: Record<PveActionId, PveActionDefinition> = {
     id: "ARCHER_SHOT",
     owner: "ARCHER",
     name: "사격",
-    description: "보스에게 물리 고정 피해 4를 줍니다.",
+    description: "오른쪽 직선 최대 4칸을 사격합니다. 다른 유닛을 관통하지 않습니다.",
     targetType: "NONE",
     phase: "ATTACK",
     value: 4,
     damageType: "PHYSICAL",
+    attackPattern: "RIGHT_LINE_FOUR_BLOCKED",
+  },
+  ARCHER_ARROW_RAIN: {
+    id: "ARCHER_ARROW_RAIN",
+    owner: "ARCHER",
+    name: "화살비",
+    description: "거리 3 이내 중심 타일과 바로 위아래를 공격해 물리 고정 피해 3을 줍니다.",
+    targetType: "TILE",
+    phase: "ATTACK",
+    value: 3,
+    damageType: "PHYSICAL",
+    maxDistance: 3,
+    attackPattern: "VERTICAL_THREE",
   },
   ARCHER_RETREAT_SHOT: {
     id: "ARCHER_RETREAT_SHOT",
@@ -116,6 +241,7 @@ export const PVE_ACTIONS: Record<PveActionId, PveActionDefinition> = {
     phase: "MOVE",
     value: 3,
     damageType: "PHYSICAL",
+    attackPattern: "RIGHT_LINE_FOUR_BLOCKED",
   },
   ARCHER_MARK: {
     id: "ARCHER_MARK",
@@ -138,11 +264,24 @@ export const PVE_ACTIONS: Record<PveActionId, PveActionDefinition> = {
     id: "MAGE_FIREBALL",
     owner: "MAGE",
     name: "화염구",
-    description: "보스에게 마법 고정 피해 6을 줍니다.",
+    description: "거리 3 이내 중심 타일과 상하좌우를 공격해 마법 고정 피해 5를 줍니다.",
+    targetType: "TILE",
+    phase: "ATTACK",
+    value: 5,
+    damageType: "MAGIC",
+    maxDistance: 3,
+    attackPattern: "CROSS_FIVE",
+  },
+  MAGE_LIGHTNING: {
+    id: "MAGE_LIGHTNING",
+    owner: "MAGE",
+    name: "번개",
+    description: "실행 위치와 같은 행의 오른쪽 모든 타일을 관통해 마법 고정 피해 4를 줍니다.",
     targetType: "NONE",
     phase: "ATTACK",
-    value: 6,
+    value: 4,
     damageType: "MAGIC",
+    attackPattern: "RIGHT_ROW_ALL",
   },
   MAGE_TELEPORT: {
     id: "MAGE_TELEPORT",
@@ -170,6 +309,17 @@ export const PVE_ACTIONS: Record<PveActionId, PveActionDefinition> = {
     targetType: "TILE",
     phase: "MOVE",
     maxDistance: 1,
+  },
+  PRIEST_HOLY_LIGHT: {
+    id: "PRIEST_HOLY_LIGHT",
+    owner: "PRIEST",
+    name: "성광",
+    description: "오른쪽 직선 최대 2칸을 비춰 마법 고정 피해 3을 줍니다.",
+    targetType: "NONE",
+    phase: "ATTACK",
+    value: 3,
+    damageType: "MAGIC",
+    attackPattern: "RIGHT_LINE_TWO",
   },
   PRIEST_HEAL: {
     id: "PRIEST_HEAL",
@@ -200,10 +350,10 @@ export const PVE_ACTIONS: Record<PveActionId, PveActionDefinition> = {
 };
 
 const ACTION_IDS_BY_CHARACTER: Record<PveCharacterId, readonly PveActionId[]> = {
-  WARRIOR: ["PASS", "WARRIOR_MOVE", "WARRIOR_SLASH", "WARRIOR_TAUNT", "WARRIOR_DEFEND"],
-  ARCHER: ["PASS", "ARCHER_MOVE", "ARCHER_SHOT", "ARCHER_RETREAT_SHOT", "ARCHER_MARK"],
-  MAGE: ["PASS", "MAGE_MOVE", "MAGE_FIREBALL", "MAGE_TELEPORT", "MAGE_SHIELD"],
-  PRIEST: ["PASS", "PRIEST_MOVE", "PRIEST_HEAL", "PRIEST_GUARD", "PRIEST_MASS_HEAL"],
+  WARRIOR: ["PASS", "WARRIOR_MOVE", "WARRIOR_SLASH", "WARRIOR_SWEEP", "WARRIOR_TAUNT", "WARRIOR_DEFEND"],
+  ARCHER: ["PASS", "ARCHER_MOVE", "ARCHER_SHOT", "ARCHER_ARROW_RAIN", "ARCHER_RETREAT_SHOT", "ARCHER_MARK"],
+  MAGE: ["PASS", "MAGE_MOVE", "MAGE_FIREBALL", "MAGE_LIGHTNING", "MAGE_TELEPORT", "MAGE_SHIELD"],
+  PRIEST: ["PASS", "PRIEST_MOVE", "PRIEST_HOLY_LIGHT", "PRIEST_HEAL", "PRIEST_GUARD", "PRIEST_MASS_HEAL"],
 };
 
 export function getPveActionsForCharacter(
@@ -262,6 +412,7 @@ export function createInitialPveBattleState(): PveBattleState {
       hp: 80,
       maxHp: 80,
       marked: false,
+      occupiedTiles: [{ x: 6, y: 1 }, { x: 6, y: 2 }],
     },
     result: "IN_PROGRESS",
   };
@@ -286,12 +437,9 @@ export function createPassPvePlans(): PvePlans {
 }
 
 export function selectPveTrackingTarget(state: PveBattleState): PveCharacterId {
-  const target = PVE_CHARACTER_ORDER
-    .map((id) => state.characters[id])
-    .filter((character) => character.alive)
-    .sort((left, right) => left.position.x - right.position.x)[0];
+  const target = livingCharacters(state)[0];
   if (!target) throw new Error("No living character can be tracked");
-  return target.id;
+  return farthestFromBoss(state);
 }
 
 export function isPvePlanComplete(plans: PvePlans): boolean {

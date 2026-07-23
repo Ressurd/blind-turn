@@ -4,6 +4,7 @@ import {
   PVE_BOARD_WIDTH,
   PVE_CHARACTER_ORDER,
 } from "./fixtures";
+import { getPveAttackUseRange } from "./attack-range";
 import type {
   PveActionDefinition,
   PveBattleState,
@@ -120,34 +121,55 @@ export function projectPvePlanningPositions(
 ): Record<PveCharacterId, PvePosition> {
   const positions = cloneInitialPositions(state);
   for (let beat = 1; beat < beforeBeat; beat += 1) {
-    for (const characterId of PVE_CHARACTER_ORDER) {
-      const action = plans[characterId][beat - 1];
-      if (!action) continue;
-      const definition = PVE_ACTIONS[action.actionId];
-      if (definition.targetType === "TILE" && action.target?.type === "TILE") {
-        const result = validatePveMove(
-          positions,
-          characterId,
-          definition,
-          action.target.position,
-        );
-        if (result.valid) positions[characterId] = { ...action.target.position };
-      } else if (definition.id === "ARCHER_RETREAT_SHOT") {
-        const destination = {
-          x: positions.ARCHER.x - 1,
-          y: positions.ARCHER.y,
-        };
-        const moveDefinition = PVE_ACTIONS.ARCHER_MOVE;
-        const result = validatePveMove(
-          positions,
-          "ARCHER",
-          moveDefinition,
-          destination,
-        );
-        if (result.valid) positions.ARCHER = destination;
-      }
+    applyPvePlanningMovements(positions, plans, beat as PveBeat);
+  }
+  return positions;
+}
+
+function applyPvePlanningMovements(
+  positions: Record<PveCharacterId, PvePosition>,
+  plans: PvePlans,
+  beat: PveBeat,
+): void {
+  for (const characterId of PVE_CHARACTER_ORDER) {
+    const action = plans[characterId][beat - 1];
+    if (!action) continue;
+    const definition = PVE_ACTIONS[action.actionId];
+    if (
+      definition.phase === "MOVE"
+      && definition.targetType === "TILE"
+      && action.target?.type === "TILE"
+    ) {
+      const result = validatePveMove(
+        positions,
+        characterId,
+        definition,
+        action.target.position,
+      );
+      if (result.valid) positions[characterId] = { ...action.target.position };
+    } else if (definition.id === "ARCHER_RETREAT_SHOT") {
+      const destination = {
+        x: positions.ARCHER.x - 1,
+        y: positions.ARCHER.y,
+      };
+      const result = validatePveMove(
+        positions,
+        "ARCHER",
+        PVE_ACTIONS.ARCHER_MOVE,
+        destination,
+      );
+      if (result.valid) positions.ARCHER = destination;
     }
   }
+}
+
+export function projectPveAttackPlanningPositions(
+  state: PveBattleState,
+  plans: PvePlans,
+  beat: PveBeat,
+): Record<PveCharacterId, PvePosition> {
+  const positions = projectPvePlanningPositions(state, plans, beat);
+  applyPvePlanningMovements(positions, plans, beat);
   return positions;
 }
 
@@ -178,11 +200,24 @@ export function validatePvePlannedAction(
   if (action.target?.type !== "TILE") {
     return { valid: false, reason: "이동할 타일을 선택하세요." };
   }
+  const targetPosition = action.target.position;
   const positions = projectPvePlanningPositions(state, plans, beat);
+  if (definition.phase === "ATTACK") {
+    const useRange = getPveAttackUseRange(
+      positions[characterId],
+      definition.id,
+    );
+    return useRange.some((position) => samePosition(position, targetPosition))
+      ? { valid: true }
+      : {
+        valid: false,
+        reason: "공격 중심 타일은 실행 위치에서 맨해튼 거리 3 이내여야 합니다.",
+      };
+  }
   return validatePveMove(
     positions,
     characterId,
     definition,
-    action.target.position,
+    targetPosition,
   );
 }

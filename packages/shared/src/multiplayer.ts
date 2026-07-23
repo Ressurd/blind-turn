@@ -13,6 +13,15 @@ import {
   REWARD_SELECTION_COUNT,
   REWARD_TIMEOUT_MS,
 } from "@blind-turn/game-engine";
+import type {
+  PveCharacterId,
+} from "@blind-turn/game-engine";
+import type {
+  PveCoopRoomView,
+  PveRoomIdentityResult,
+  PveSetPlanSlotInput,
+  PveTurnResolvedPayload,
+} from "./pve-coop";
 
 export const ROOM_CODE_LENGTH = 6;
 export const MAX_ROOM_PLAYERS = 6;
@@ -72,6 +81,12 @@ export type RoomErrorCode =
   | "CHAT_RATE_LIMITED"
   | "CHAT_DEAD_PLAYER"
   | "GAME_ENGINE_FAILURE"
+  | "PVE_ROLE_TAKEN"
+  | "PVE_CHARACTER_LIMIT"
+  | "PVE_PLAN_INVALID"
+  | "PVE_PLAN_LOCKED"
+  | "PVE_TURN_MISMATCH"
+  | "PVE_CHARACTER_DEAD"
   | "INTERNAL_SERVER_ERROR";
 
 export type SocketError = {
@@ -239,6 +254,58 @@ export type ReconnectRoomResult = CreateRoomResult;
 export type SocketAckCallback<T> = (response: SocketAck<T>) => void;
 
 export interface ClientToServerEvents {
+  "pve:room:create": (
+    payload: { nickname: string },
+    ack: SocketAckCallback<PveRoomIdentityResult>,
+  ) => void;
+  "pve:room:join": (
+    payload: { roomCode: string; nickname: string },
+    ack: SocketAckCallback<PveRoomIdentityResult>,
+  ) => void;
+  "pve:room:reconnect": (
+    payload: SessionCredentials,
+    ack: SocketAckCallback<PveRoomIdentityResult>,
+  ) => void;
+  "pve:room:leave": (
+    payload: { roomCode: string },
+    ack: SocketAckCallback<{ left: true }>,
+  ) => void;
+  "pve:room:select-character": (
+    payload: { roomCode: string; characterId: PveCharacterId },
+    ack: SocketAckCallback<{ assignedCharacterIds: PveCharacterId[] }>,
+  ) => void;
+  "pve:room:set-ready": (
+    payload: { roomCode: string; ready: boolean },
+    ack: SocketAckCallback<{ ready: boolean }>,
+  ) => void;
+  "pve:room:start": (
+    payload: { roomCode: string },
+    ack: SocketAckCallback<{ started: true }>,
+  ) => void;
+  "pve:plan:set-slot": (
+    payload: PveSetPlanSlotInput,
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "pve:plan:set-confirmed": (
+    payload: { roomCode: string; turnNumber: number; confirmed: boolean },
+    ack: SocketAckCallback<{ confirmed: boolean }>,
+  ) => void;
+  "pve:playback-finished": (
+    payload: { roomCode: string; turnNumber: number },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "pve:request-rematch": (
+    payload: { roomCode: string },
+    ack: SocketAckCallback<{ accepted: true }>,
+  ) => void;
+  "pve:return-lobby": (
+    payload: { roomCode: string },
+    ack: SocketAckCallback<{ returned: true }>,
+  ) => void;
+  "pve:chat:send": (
+    payload: { roomCode: string; message: string },
+    ack: SocketAckCallback<{ sent: true }>,
+  ) => void;
   "room:create": (
     payload: { nickname: string },
     ack: SocketAckCallback<CreateRoomResult>,
@@ -316,6 +383,12 @@ export interface ClientToServerEvents {
 }
 
 export interface ServerToClientEvents {
+  "pve:room:state-updated": (payload: PveCoopRoomView) => void;
+  "pve:turn-resolved": (payload: PveTurnResolvedPayload) => void;
+  "pve:player-disconnected": (payload: { playerId: string }) => void;
+  "pve:player-reconnected": (payload: { playerId: string }) => void;
+  "pve:chat:message": (payload: ChatMessage) => void;
+  "pve:error": (payload: SocketError) => void;
   "room:created": (payload: CreateRoomResult) => void;
   "room:joined": (payload: JoinRoomResult) => void;
   "room:state-updated": (payload: PlayerGameView) => void;
@@ -351,6 +424,7 @@ export interface ServerToClientEvents {
 export type SocketData = {
   roomCode?: string;
   playerId?: string;
+  roomMode?: "PVP" | "PVE_COOP";
 };
 
 export const PUBLIC_MAX_HAND_SIZE = MAX_HAND_SIZE;

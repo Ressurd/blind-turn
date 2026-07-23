@@ -12,6 +12,12 @@ export const CharacterClassIdSchema = z.enum([
   "GUARDIAN",
   "TACTICIAN",
 ]);
+export const PveCharacterIdSchema = z.enum([
+  "WARRIOR",
+  "ARCHER",
+  "MAGE",
+  "PRIEST",
+]);
 export const RoomCreatePayloadSchema = z.object({ nickname: NicknameSchema });
 export const RoomJoinPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
@@ -68,4 +74,44 @@ export const UpdateDeckRemovalPayloadSchema = z.object({
 export const ChatSendPayloadSchema = z.object({
   roomCode: RoomCodeSchema,
   message: z.string(),
+});
+
+const PvePositionSchema = z.object({
+  x: z.number().int().min(0).max(6),
+  y: z.number().int().min(0).max(3),
+});
+const PveActionTargetSchema = z.union([
+  z.object({ type: z.literal("TILE"), position: PvePositionSchema }),
+  z.object({ type: z.literal("ALLY"), characterId: PveCharacterIdSchema }),
+]);
+const PveActionIdSchema = z.enum([
+  "PASS", "WARRIOR_MOVE", "WARRIOR_SLASH", "WARRIOR_SWEEP",
+  "WARRIOR_TAUNT", "WARRIOR_DEFEND", "ARCHER_MOVE", "ARCHER_SHOT",
+  "ARCHER_ARROW_RAIN", "ARCHER_RETREAT_SHOT", "ARCHER_MARK", "MAGE_MOVE",
+  "MAGE_FIREBALL", "MAGE_LIGHTNING", "MAGE_TELEPORT", "MAGE_SHIELD",
+  "PRIEST_MOVE", "PRIEST_HOLY_LIGHT", "PRIEST_HEAL", "PRIEST_GUARD",
+  "PRIEST_MASS_HEAL",
+]);
+export const PveSelectCharacterPayloadSchema = z.object({
+  roomCode: RoomCodeSchema,
+  characterId: PveCharacterIdSchema,
+});
+export const PveSetPlanSlotPayloadSchema = z.object({
+  roomCode: RoomCodeSchema,
+  turnNumber: z.number().int().positive(),
+  characterId: PveCharacterIdSchema,
+  beat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  action: z.object({
+    actionId: PveActionIdSchema,
+    target: PveActionTargetSchema.optional(),
+  }).nullable(),
+});
+export const PveSetConfirmedPayloadSchema = z.object({
+  roomCode: RoomCodeSchema,
+  turnNumber: z.number().int().positive(),
+  confirmed: z.boolean(),
+});
+export const PveTurnPayloadSchema = z.object({
+  roomCode: RoomCodeSchema,
+  turnNumber: z.number().int().positive(),
 });

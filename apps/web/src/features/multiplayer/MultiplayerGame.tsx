@@ -587,7 +587,7 @@ export function MultiplayerGame() {
       <header className="siteHeader onlineHeader">
         <div className="brandLockup"><span className="brandMark">BT</span><span className="brandWords"><strong>BLIND TURN</strong><small>V2 CARD TACTICS</small></span></div>
         <div className={`connectionBadge ${connectionStatus}`}><span />{CONNECTION_LABEL[connectionStatus]}</div>
-        <div className="headerActions">{view ? <button className="ghostButton" onClick={leaveRoom}>방 나가기</button> : null}<Link className="ghostLink" href="/local">규칙 실험실</Link></div>
+        <div className="headerActions">{view ? <button className="ghostButton" onClick={leaveRoom}>방 나가기</button> : null}<Link className="ghostLink" href="/pve">2~4인 PvE</Link><Link className="ghostLink" href="/local">규칙 실험실</Link></div>
       </header>
 
       {error ? (

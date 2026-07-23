@@ -32,6 +32,12 @@ const ERROR_MESSAGES: Record<RoomErrorCode, string> = {
   CHAT_RATE_LIMITED: "채팅을 너무 빠르게 보내고 있습니다.",
   CHAT_DEAD_PLAYER: "사망한 플레이어는 채팅을 보낼 수 없습니다.",
   GAME_ENGINE_FAILURE: "전투 판정 중 오류가 발생해 게임을 종료했습니다.",
+  PVE_ROLE_TAKEN: "이미 다른 플레이어가 선택한 직업입니다.",
+  PVE_CHARACTER_LIMIT: "한 플레이어는 최대 2개의 캐릭터를 담당할 수 있습니다.",
+  PVE_PLAN_INVALID: "현재 전투 상태에서 사용할 수 없는 행동 계획입니다.",
+  PVE_PLAN_LOCKED: "확정한 계획은 확정을 취소한 뒤 변경할 수 있습니다.",
+  PVE_TURN_MISMATCH: "현재 PvE 턴과 요청 턴이 일치하지 않습니다.",
+  PVE_CHARACTER_DEAD: "쓰러진 캐릭터의 행동은 변경할 수 없습니다.",
   INTERNAL_SERVER_ERROR: "서버에서 예상하지 못한 오류가 발생했습니다.",
 };
 

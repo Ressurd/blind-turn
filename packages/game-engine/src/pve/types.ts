@@ -2,6 +2,8 @@ export type PveBeat = 1 | 2 | 3;
 
 export type PveCharacterId = "WARRIOR" | "ARCHER" | "MAGE" | "PRIEST";
 
+export type PveEnemyId = string;
+
 export type PveDamageType = "PHYSICAL" | "MAGIC" | "TRUE";
 
 export type PvePosition = {
@@ -26,6 +28,7 @@ export type PveBossState = {
   hp: number;
   maxHp: number;
   marked: boolean;
+  occupiedTiles: PvePosition[];
 };
 
 export type PveBattleResult = "IN_PROGRESS" | "VICTORY" | "DEFEAT";
@@ -40,17 +43,21 @@ export type PveActionId =
   | "PASS"
   | "WARRIOR_MOVE"
   | "WARRIOR_SLASH"
+  | "WARRIOR_SWEEP"
   | "WARRIOR_TAUNT"
   | "WARRIOR_DEFEND"
   | "ARCHER_MOVE"
   | "ARCHER_SHOT"
+  | "ARCHER_ARROW_RAIN"
   | "ARCHER_RETREAT_SHOT"
   | "ARCHER_MARK"
   | "MAGE_MOVE"
   | "MAGE_FIREBALL"
+  | "MAGE_LIGHTNING"
   | "MAGE_TELEPORT"
   | "MAGE_SHIELD"
   | "PRIEST_MOVE"
+  | "PRIEST_HOLY_LIGHT"
   | "PRIEST_HEAL"
   | "PRIEST_GUARD"
   | "PRIEST_MASS_HEAL";
@@ -65,6 +72,15 @@ export type PveResolutionPhase =
   | "BOSS"
   | "STATUS";
 
+export type PveAttackPattern =
+  | "RIGHT_ONE"
+  | "RIGHT_SWEEP"
+  | "RIGHT_LINE_FOUR_BLOCKED"
+  | "VERTICAL_THREE"
+  | "CROSS_FIVE"
+  | "RIGHT_ROW_ALL"
+  | "RIGHT_LINE_TWO";
+
 export type PveActionDefinition = {
   id: PveActionId;
   owner: PveCharacterId | "COMMON";
@@ -75,6 +91,7 @@ export type PveActionDefinition = {
   value?: number;
   damageType?: PveDamageType;
   maxDistance?: number;
+  attackPattern?: PveAttackPattern;
 };
 
 export type PveActionTarget =
@@ -96,11 +113,88 @@ export type PvePlans = Record<PveCharacterId, PveActionSlots>;
 
 export type PveBossIntent = {
   beat: PveBeat;
-  id: "COLUMN_SMASH" | "TRACKING_BOLT" | "EARTH_QUAKE";
+  id:
+    | "COLUMN_SMASH"
+    | "TRACKING_BOLT"
+    | "EARTH_QUAKE"
+    | "UPPER_COLLAPSE"
+    | "MELEE_SMASH"
+    | "FRACTURE_EXPLOSION"
+    | "CENTER_CRUSH"
+    | "WEAKNESS_TRACKING"
+    | "HEAVY_EARTH_QUAKE";
   name: string;
   description: string;
   damage: number;
   tauntable: boolean;
+  targetCharacterIds?: PveCharacterId[] | undefined;
+  targetTiles?: PvePosition[] | undefined;
+};
+
+export type PveBossPlan = [PveBossIntent, PveBossIntent, PveBossIntent];
+
+export type PveActionOrderSegment =
+  | "PASS"
+  | "PRIMARY"
+  | "RETREAT_ATTACK"
+  | "BOSS";
+
+export type PveActionOrderEntry = {
+  id: string;
+  beat: PveBeat;
+  actorId: PveCharacterId | "BOSS";
+  actorType: "CHARACTER" | "BOSS";
+  actionId?: PveActionId | undefined;
+  bossIntentId?: PveBossIntent["id"] | undefined;
+  actionName: string;
+  phase: PveResolutionPhase;
+  segment: PveActionOrderSegment;
+  target?: PveActionTarget | undefined;
+};
+
+export type PveResolvedActionTimelineEntry = PveActionOrderEntry & {
+  eventId: string;
+  startEventIndex: number;
+  endEventIndex: number;
+  status: "COMPLETED" | "SKIPPED";
+  skipReason?: string | undefined;
+  resultSummary: string;
+  targetCharacterId?: PveCharacterId | undefined;
+  targetEnemyId?: PveEnemyId | undefined;
+  targetPosition?: PvePosition | undefined;
+};
+
+export type PveEnemyOccupancy = {
+  enemyId: PveEnemyId;
+  occupiedTiles: PvePosition[];
+};
+
+export type PveAttackGeometry = {
+  actionId: PveActionId;
+  origin: PvePosition;
+  useRange: PvePosition[];
+  selectedCenter: PvePosition | null;
+  effectArea: PvePosition[];
+  enemyOccupancies: PveEnemyOccupancy[];
+  hitEnemyIds: PveEnemyId[];
+};
+
+export type PveActionPreview = {
+  actionId: PveActionId;
+  actorId: PveCharacterId;
+  beat: PveBeat;
+  originPosition: PvePosition;
+  selectableTiles: PvePosition[];
+  pathTiles: PvePosition[];
+  effectTiles: PvePosition[];
+  selectedTile: PvePosition | null;
+  selectableCharacterIds: PveCharacterId[];
+  selectedCharacterId: PveCharacterId | null;
+  predictedTargetIds: Array<PveCharacterId | PveEnemyId>;
+  willHitBoss: boolean;
+  requiresTileTarget: boolean;
+  requiresCharacterTarget: boolean;
+  invalidReason: string | null;
 };
 
 export type PveCombatEventType =
@@ -115,6 +209,7 @@ export type PveCombatEventType =
   | "HEALED"
   | "BOSS_MARKED"
   | "BOSS_DAMAGED"
+  | "ATTACK_MISSED"
   | "BOSS_ACTION_STARTED"
   | "CHARACTER_DAMAGED"
   | "CHARACTER_DIED"
@@ -129,9 +224,13 @@ export type PveCombatEvent = {
   phase: PveResolutionPhase;
   type: PveCombatEventType;
   message: string;
+  timelineEntryId?: string | undefined;
+  actionName?: string | undefined;
+  skipReason?: string | undefined;
   actorId?: PveCharacterId | "BOSS" | "SYSTEM" | undefined;
   targetCharacterId?: PveCharacterId | undefined;
   actionId?: PveActionId | undefined;
+  targetEnemyId?: PveEnemyId | undefined;
   damageType?: PveDamageType | undefined;
   amount?: number | undefined;
   rawAmount?: number | undefined;
@@ -139,12 +238,16 @@ export type PveCombatEvent = {
   shieldAbsorbed?: number | undefined;
   from?: PvePosition | undefined;
   to?: PvePosition | undefined;
+  selectedCenter?: PvePosition | undefined;
+  effectArea?: PvePosition[] | undefined;
+  hitEnemyIds?: PveEnemyId[] | undefined;
   state: PveBattleState;
 };
 
 export type PveTurnResolution = {
   state: PveBattleState;
   events: PveCombatEvent[];
+  timeline: PveResolvedActionTimelineEntry[];
   trackingTargetId: PveCharacterId;
 };
 

@@ -1,0 +1,669 @@
+.entryShell,
+.lobbyShell {
+  background:
+    linear-gradient(rgba(255, 255, 255, .025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .025) 1px, transparent 1px),
+    #070a08;
+  background-size: 36px 36px;
+  color: #f4f6ed;
+  min-height: 100dvh;
+}
+
+.entryShell {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+}
+
+.entryCard {
+  background: #111711;
+  border: 1px solid #526252;
+  box-shadow: 14px 14px 0 rgba(0, 0, 0, .34);
+  display: grid;
+  gap: 14px;
+  max-width: 620px;
+  padding: 32px;
+  width: 100%;
+}
+
+.entryCard > p,
+.lobbyShell header p {
+  color: #c8f45b;
+  font: 800 12px Consolas, monospace;
+  letter-spacing: .12em;
+  margin: 0;
+}
+
+.entryCard h1 {
+  font-size: clamp(34px, 6vw, 62px);
+  line-height: .95;
+  margin: 2px 0 8px;
+}
+
+.entryCard > span,
+.entryCard > small {
+  color: #aeb8aa;
+  line-height: 1.5;
+}
+
+.entryCard label {
+  color: #aeb8aa;
+  display: grid;
+  font-size: 13px;
+  gap: 7px;
+}
+
+.entryCard input,
+.entryCard button,
+.lobbyShell button,
+.chatForm input,
+.chatForm button {
+  background: #090d09;
+  border: 1px solid #526252;
+  color: #f4f6ed;
+  min-height: 46px;
+  padding: 0 14px;
+}
+
+.entryCard button:not(:disabled):hover,
+.lobbyShell button:not(:disabled):hover {
+  border-color: #c8f45b;
+  color: #c8f45b;
+}
+
+.entryCard button:disabled,
+.lobbyShell button:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.entryCard > button,
+.primary {
+  background: #c8f45b !important;
+  border-color: #c8f45b !important;
+  color: #090d09 !important;
+  font-weight: 900;
+}
+
+.joinRow {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 110px;
+}
+
+.entryCard nav {
+  display: flex;
+  gap: 14px;
+}
+
+.entryCard nav a {
+  color: #aeb8aa;
+  font-size: 13px;
+}
+
+.error,
+.battleError {
+  background: rgba(255, 111, 91, .12);
+  border: 1px solid #ff6f5b;
+  color: #ffb6aa;
+  padding: 10px 14px;
+}
+
+.lobbyShell {
+  padding: 24px;
+}
+
+.lobbyShell > header,
+.lobbyShell > footer {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin: 0 auto;
+  max-width: 1250px;
+}
+
+.lobbyShell header h1 {
+  font-size: 46px;
+  margin: 4px 0 20px;
+}
+
+.online,
+.offline {
+  border: 1px solid #c8f45b;
+  color: #c8f45b;
+  font: 800 12px Consolas, monospace;
+  padding: 10px 14px;
+}
+
+.offline {
+  border-color: #ff6f5b;
+  color: #ff6f5b;
+}
+
+.lobbyGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  margin: 0 auto 16px;
+  max-width: 1250px;
+}
+
+.rolePanel,
+.rosterPanel {
+  background: #111711;
+  border: 1px solid #3b493b;
+  padding: 22px;
+}
+
+.rolePanel h2,
+.rosterPanel h2 {
+  font-size: 22px;
+  margin: 0 0 16px;
+}
+
+.roleGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.roleGrid button {
+  align-items: center;
+  display: grid;
+  gap: 4px 12px;
+  grid-template-columns: 54px 1fr;
+  min-height: 110px;
+  text-align: left;
+}
+
+.roleGrid button > b {
+  align-items: center;
+  background: #182018;
+  border: 1px solid #526252;
+  border-radius: 50%;
+  display: flex;
+  font-size: 22px;
+  grid-row: span 2;
+  height: 50px;
+  justify-content: center;
+  width: 50px;
+}
+
+.roleGrid button strong {
+  font-size: 18px;
+}
+
+.roleGrid button span,
+.rosterRow small {
+  color: #aeb8aa;
+  font-size: 12px;
+}
+
+.selectedRole {
+  border-color: #c8f45b !important;
+  box-shadow: inset 0 0 0 1px #c8f45b;
+}
+
+.rosterPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.rosterRow {
+  align-items: center;
+  border: 1px solid #3b493b;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 28px 1fr auto auto;
+  min-height: 58px;
+  padding: 8px;
+}
+
+.rosterRow > b {
+  align-items: center;
+  border: 1px solid #526252;
+  display: flex;
+  height: 28px;
+  justify-content: center;
+}
+
+.rosterRow > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rosterRow em,
+.rosterRow i {
+  color: #aeb8aa;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.rosterRow i {
+  color: #c8f45b;
+}
+
+.lobbyShell > footer {
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.lobbyShell > footer span {
+  color: #aeb8aa;
+  margin-right: auto;
+}
+
+.coopShell {
+  min-height: 760px;
+}
+
+.battleHeader {
+  position: relative;
+  z-index: 5;
+}
+
+.turnIdentity {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.turnIdentity b {
+  color: #c8f45b;
+  font-size: 18px;
+}
+
+.turnIdentity span,
+.turnIdentity em {
+  border-left: 1px solid #3b493b;
+  color: #aeb8aa;
+  font-size: 12px;
+  font-style: normal;
+  padding-left: 12px;
+}
+
+.battleError {
+  left: 50%;
+  max-width: 720px;
+  position: fixed;
+  top: 74px;
+  transform: translateX(-50%);
+  width: calc(100% - 24px);
+  z-index: 50;
+}
+
+.battleWorkspace {
+  grid-template-rows: auto auto;
+}
+
+.readonlyCharacter {
+  cursor: default;
+}
+
+.startReason {
+  color: #ffb6aa;
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.commandGrid > div:first-child {
+  grid-template-rows: 34px 48px 70px minmax(0, 1fr);
+}
+
+.myCharacterTabs {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.myCharacterTabs button {
+  background: #0a0e0a;
+  border: 1px solid #3b493b;
+  color: #aeb8aa;
+  flex: 1 1 0;
+  font-size: 12px;
+  min-height: 30px;
+  min-width: 0;
+  padding: 3px 8px;
+}
+
+.myCharacterTabs button small {
+  display: block;
+  font-size: 9px;
+}
+
+.myCharacterTabs .activeCharacterTab {
+  border-color: #c8f45b;
+  color: #f4f6ed;
+}
+
+.myPlanStatus {
+  display: grid;
+  gap: 3px;
+  margin: 5px 0;
+}
+
+.myPlanStatus span {
+  color: #aeb8aa;
+  font-size: 11px;
+}
+
+.previewMoveSelectable::after,
+.previewAttackSelectable::after,
+.previewMovePath::after,
+.previewAttackEffect::after {
+  bottom: 2px;
+  content: "";
+  left: 2px;
+  pointer-events: none;
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  z-index: 1;
+}
+
+.previewMoveSelectable::after {
+  background: rgba(58, 217, 174, .16);
+  border: 1px dashed #52e0b7;
+}
+
+.previewAttackSelectable::after {
+  background: rgba(112, 219, 234, .1);
+  border: 1px dashed #70dbea;
+}
+
+.previewMovePath::after {
+  background: linear-gradient(135deg, transparent 35%, rgba(82, 224, 183, .35) 36%, rgba(82, 224, 183, .35) 55%, transparent 56%);
+  border: 2px solid #52e0b7;
+}
+
+.previewAttackEffect::after {
+  background: repeating-linear-gradient(135deg, rgba(112, 219, 234, .18), rgba(112, 219, 234, .18) 5px, transparent 5px, transparent 10px);
+  border: 2px solid #70dbea;
+}
+
+.previewHoveredTile::after {
+  filter: brightness(1.7);
+  outline: 2px solid #f4f6ed;
+  outline-offset: -4px;
+}
+
+.previewSelectedTile {
+  outline: 2px solid #f4f6ed;
+  outline-offset: -4px;
+}
+
+.previewOriginTile {
+  box-shadow: inset 0 0 0 2px rgba(244, 246, 237, .55);
+}
+
+.previewTileMarker,
+.previewOriginMarker,
+.previewSelectedMarker {
+  align-items: center;
+  border-radius: 50%;
+  display: flex;
+  font-size: 9px;
+  font-weight: 900;
+  height: 15px;
+  justify-content: center;
+  line-height: 1;
+  pointer-events: none;
+  position: absolute;
+  width: 15px;
+  z-index: 4;
+}
+
+.previewTileMarker {
+  background: #70dbea;
+  bottom: 3px;
+  color: #071216;
+  right: 3px;
+}
+
+.previewMoveSelectable .previewTileMarker {
+  background: #52e0b7;
+}
+
+.previewOriginMarker {
+  background: #f4f6ed;
+  bottom: 3px;
+  color: #111711;
+  left: 3px;
+}
+
+.previewSelectedMarker {
+  background: #f4f6ed;
+  color: #111711;
+  right: 3px;
+  top: 24px;
+}
+
+.previewSupportSelectable .characterToken {
+  border-color: #ffd56a;
+  box-shadow: 0 0 0 2px rgba(255, 213, 106, .55), 0 0 16px rgba(255, 213, 106, .25);
+}
+
+.previewSupportSelected .characterToken {
+  border-color: #fff2b3;
+  box-shadow: 0 0 0 3px #ffd56a, 0 0 22px rgba(255, 213, 106, .5);
+}
+
+.bossPreviewHit {
+  border-color: #70dbea !important;
+  box-shadow: 0 0 0 3px rgba(112, 219, 234, .65), 0 0 22px rgba(112, 219, 234, .42) !important;
+}
+
+.bossPreviewBadge {
+  background: #70dbea;
+  color: #071216;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 3px 6px;
+}
+
+.bossVirtualTargets {
+  display: flex;
+  gap: 5px;
+  justify-content: center;
+}
+
+.bossVirtualTarget {
+  background: #111711;
+  border: 1px solid #526252;
+  color: #aeb8aa;
+  font: 800 9px/1 Consolas, monospace;
+  min-height: 21px;
+  padding: 0 5px;
+}
+
+.bossVirtualTarget:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.bossVirtualSelectable {
+  background: rgba(112, 219, 234, .12);
+  border-color: #70dbea;
+  color: #d7fbff;
+  cursor: pointer !important;
+}
+
+.bossVirtualEffect {
+  box-shadow: inset 0 0 0 2px rgba(112, 219, 234, .45);
+}
+
+.bossVirtualSelected {
+  outline: 2px solid #f4f6ed;
+}
+
+.previewPlanAction {
+  cursor: pointer;
+  width: 100%;
+}
+
+.previewPlanAction:disabled {
+  cursor: default;
+  opacity: .65;
+}
+
+.previewPlanActionActive {
+  background: rgba(112, 219, 234, .12) !important;
+  box-shadow: inset 3px 0 #70dbea;
+  color: #f4f6ed !important;
+}
+
+.previewHitMessage,
+.previewHitMessage b {
+  color: #70dbea;
+}
+
+.cancelPreviewButton {
+  background: #0a0e0a;
+  border: 1px solid #526252;
+  color: #f4f6ed;
+  font-size: 11px;
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
+.confirmStatus {
+  background: #0a0e0a;
+  border: 1px solid #3b493b;
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 9px 11px;
+}
+
+.confirmStatus strong {
+  color: #c8f45b;
+  font-size: 14px;
+}
+
+.confirmStatus span,
+.syncMessage {
+  color: #aeb8aa;
+  font-size: 11px;
+}
+
+.previewHint {
+  color: #aeb8aa;
+  font-size: 10px;
+  line-height: 1.35;
+  margin: 6px 2px 0;
+}
+
+.controlPanel {
+  overflow: auto;
+}
+
+.resultActions {
+  display: grid;
+  gap: 7px;
+}
+
+.resultActions > strong {
+  color: #c8f45b;
+  font-size: 28px;
+}
+
+.resultActions button,
+.copyLog {
+  background: #0a0e0a;
+  border: 1px solid #526252;
+  color: #f4f6ed;
+  min-height: 38px;
+}
+
+.copyLog {
+  margin-top: 7px;
+  width: 100%;
+}
+
+.chatForm {
+  border-top: 1px solid #3b493b;
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.chatForm > div {
+  max-height: 82px;
+  overflow: auto;
+}
+
+.chatForm p {
+  color: #aeb8aa;
+  font-size: 10px;
+  margin: 3px 0;
+}
+
+.chatForm p b {
+  color: #f4f6ed;
+}
+
+.chatForm label {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: 1fr 58px;
+  margin-top: 7px;
+}
+
+.chatForm input,
+.chatForm button {
+  min-height: 34px;
+  padding: 0 7px;
+}
+
+@media (max-width: 1180px) {
+  .lobbyGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .coopShell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: auto;
+  }
+
+  .battleWorkspace {
+    height: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .entryCard {
+    padding: 22px 16px;
+  }
+
+  .roleGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .battleHeader {
+    height: auto;
+    min-height: 68px;
+  }
+
+  .turnIdentity span,
+  .turnIdentity em {
+    display: none;
+  }
+}
+
+@media (max-height: 820px) {
+  .coopShell {
+    min-height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .battleWorkspace {
+    grid-template-rows: auto auto;
+  }
+}

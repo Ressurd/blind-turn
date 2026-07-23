@@ -1,6 +1,6 @@
 # BLIND TURN
 
-2~6인 서버 권한형 카드 심리전 웹게임입니다. V2는 `10장 덱 → 5장 시작 손패 → 턴마다 카드 1장 또는 PASS → 전원 동시 판정` 구조를 사용합니다.
+2~6인 서버 권한형 카드 심리전과 2~4인 온라인 PvE 협동 전투를 제공하는 웹게임입니다. PvP V2는 `10장 덱 → 5장 시작 손패 → 턴마다 카드 1장 또는 PASS → 전원 동시 판정` 구조를 사용합니다.
 
 ## 패키지
 
@@ -42,6 +42,8 @@ pnpm dev
 - Socket.IO Server: `http://localhost:4000`
 - Server health: `http://localhost:4000/health`
 - 카드/캐릭터 카탈로그: `http://localhost:3000/local`
+- 2~4인 온라인 PvE: `http://localhost:3000/pve`
+- 1인 PvE 개발 프로토타입: `http://localhost:3000/pve-prototype`
 
 ```env
 # apps/web/.env.local

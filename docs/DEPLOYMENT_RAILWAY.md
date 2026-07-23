@@ -82,6 +82,8 @@ Server: https://blind-turn-server-production.up.railway.app
 
 실제 Railway가 생성한 주소를 사용하며 끝에 `/`를 붙이지 않습니다.
 
+온라인 PvE 협동 테스트는 Web 공개 주소 뒤에 `/pve`를 붙여 접속합니다. 예시 주소 기준으로는 `https://blind-turn-web-production.up.railway.app/pve`입니다. 신규 경로는 해당 커밋이 Web과 Server 양쪽에 모두 배포된 뒤에만 정상 동작합니다.
+
 ### blind-turn-web Variables
 
 ```env

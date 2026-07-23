@@ -10,10 +10,13 @@ import {
   type AppLogger,
 } from "./logging/logger";
 import { RoomManager } from "./rooms/room-manager";
+import { PveRoomManager } from "./pve/pve-room-manager";
 import { registerChatEvents } from "./socket/register-chat-events";
 import { registerGameEvents } from "./socket/register-game-events";
 import { registerRoomEvents } from "./socket/register-room-events";
 import { registerRoomManagerEvents } from "./socket/register-room-manager-events";
+import { registerPveEvents } from "./socket/register-pve-events";
+import { registerPveRoomManagerEvents } from "./socket/register-pve-room-manager-events";
 import type { GameSocket } from "./socket/socket-session";
 
 const DEFAULT_HOST = "0.0.0.0";
@@ -24,6 +27,7 @@ export type BlindTurnServerOptions = {
   host?: string;
   allowedOrigins?: string[];
   roomManager?: RoomManager;
+  pveRoomManager?: PveRoomManager;
   logger?: AppLogger;
 };
 
@@ -36,6 +40,7 @@ export type BlindTurnServer = {
   >;
   httpServer: HttpServer;
   roomManager: RoomManager;
+  pveRoomManager: PveRoomManager;
   start: () => Promise<{ host: string; port: number; url: string }>;
   stop: () => Promise<void>;
 };
@@ -46,6 +51,10 @@ export function createBlindTurnServer(
   const logger = options.logger ?? noopLogger;
   const allowedOrigins = options.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS;
   const roomManager = options.roomManager ?? new RoomManager({ logger });
+  const pveRoomManager = options.pveRoomManager ?? new PveRoomManager({
+    logger,
+    roomCodeExists: (roomCode) => Boolean(roomManager.getRoom(roomCode)),
+  });
   const host = options.host ?? DEFAULT_HOST;
   let lifecycle: "created" | "ready" | "stopping" | "stopped" = "created";
   let startedAt = 0;
@@ -62,8 +71,8 @@ export function createBlindTurnServer(
         ok: ready,
         service: "blind-turn-server",
         uptimeSeconds: ready ? Math.max(0, Math.floor((Date.now() - startedAt) / 1_000)) : 0,
-        activeRooms: roomManager.getRoomCount(),
-        connectedPlayers: roomManager.getConnectedPlayerCount(),
+        activeRooms: roomManager.getRoomCount() + pveRoomManager.getRoomCount(),
+        connectedPlayers: roomManager.getConnectedPlayerCount() + pveRoomManager.getConnectedPlayerCount(),
       }));
       return;
     }
@@ -96,6 +105,7 @@ export function createBlindTurnServer(
   });
 
   const unsubscribe = registerRoomManagerEvents(io, roomManager);
+  const unsubscribePve = registerPveRoomManagerEvents(io, pveRoomManager);
   io.on("connection", (socket: GameSocket) => {
     logger.info("socket_connected", {
       socketId: socket.id.slice(0, 8),
@@ -105,8 +115,10 @@ export function createBlindTurnServer(
     registerRoomEvents(socket, roomManager, logger);
     registerGameEvents(socket, roomManager, logger);
     registerChatEvents(socket, roomManager, logger);
+    registerPveEvents(socket, pveRoomManager, logger);
     socket.on("disconnect", (reason) => {
       roomManager.disconnectSocket(socket.id);
+      pveRoomManager.disconnectSocket(socket.id);
       logger.info("socket_disconnected", {
         socketId: socket.id.slice(0, 8),
         reason,
@@ -118,6 +130,7 @@ export function createBlindTurnServer(
     io,
     httpServer,
     roomManager,
+    pveRoomManager,
     start: () =>
       new Promise((resolve, reject) => {
         if (lifecycle !== "created") {
@@ -138,7 +151,9 @@ export function createBlindTurnServer(
       if (stopPromise) return stopPromise;
       lifecycle = "stopping";
       unsubscribe();
+      unsubscribePve();
       roomManager.destroy();
+      pveRoomManager.destroy();
       stopPromise = new Promise((resolve) => {
         io.close(() => {
           lifecycle = "stopped";
